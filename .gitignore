@@ -1,0 +1,77 @@
+# =============================================================================
+# The Omar Files — .gitignore
+# =============================================================================
+# This project is a generic tool built around one specific, private group
+# chat. Everything below is either that private data, something derived from
+# it (which still leaks real names/content), or purely local machinery/cache.
+# None of it should ever leave your machine.
+#
+# If you're setting this up for your OWN chat, this is exactly the set of
+# files/folders the pipeline will (re)create for you locally — you don't
+# need any of them from git.
+# =============================================================================
+
+# --- The actual chat data ---------------------------------------------------
+# Raw monthly WhatsApp exports and their normalized intermediates. Full
+# message content, real names, real timestamps.
+Raw_Exports/*
+!Raw_Exports/.gitkeep
+Pipeline/normalized_exports/*
+!Pipeline/normalized_exports/.gitkeep
+
+# The name/phone-number directory. This is the single most sensitive file in
+# the whole project — it maps real phone numbers to real people. It is NOT
+# just "internal IDs to names" the way message content is scrubbed; treat it
+# like a contacts list. Copy Pipeline/identities.example.json to
+# Pipeline/identities.json to get started with your own.
+Pipeline/identities.json
+
+# Run history for the merge step (harmless on its own, but it's local state,
+# not something to track).
+Pipeline/logs/*
+!Pipeline/logs/.gitkeep
+
+# --- Generated reports -------------------------------------------------------
+# These are the finished deliverables the pipeline writes to the project
+# root every run. They're built from your archive, so they're exactly as
+# private as the archive itself.
+/Full_Archive.txt
+/Full_Archive.pdf
+/chat_report.html
+/chat_report.pdf
+/chat_search_data.json
+/arc_report.txt
+/arc_timeline.png
+
+# --- Generated analysis data & caches ---------------------------------------
+# Cached charts and arc-summary data. These contain real names and per-person
+# message stats pulled straight from the archive.
+Pipeline/Tools/chat_analyzer/_chart_cache/*
+!Pipeline/Tools/chat_analyzer/_chart_cache/.gitkeep
+Pipeline/Tools/arc_analyzer/data/*
+!Pipeline/Tools/arc_analyzer/data/.gitkeep
+
+# --- Backup / decryption artifacts ------------------------------------------
+# In case you're pulling a full history from a phone backup (see
+# msgstore_export.py in the docs) — never commit the database or any key
+# material used to decrypt it.
+*.db
+*.db-wal
+*.db-shm
+msgstore*
+*.key
+*.crypt*
+
+# --- Python ------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# --- OS / editor cruft ---------------------------------------------------------
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

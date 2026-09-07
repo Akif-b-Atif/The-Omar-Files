@@ -1,0 +1,9 @@
+{
+  "identities": [
+    {"name": "Zoya", "aliases": ["Zoya"]},
+    {"name": "Bilal", "aliases": ["Bilal"]},
+    {"name": "Farhan", "aliases": ["Farhan"]},
+    {"name": "Nadia", "aliases": ["Nadia"]},
+    {"name": "Kabir", "aliases": ["Kabir", "+92 301 5567890"]}
+  ]
+}

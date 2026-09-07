@@ -1,0 +1,15 @@
+# Shared dependencies for every tool under Pipeline/Tools/ (arc_analyzer,
+# chat_analyzer, pdf_export). These three used to be separate repos, each
+# with its own requirements.txt that overlapped heavily with the others
+# (pandas/numpy/matplotlib for the two analyzers, reportlab for both PDF
+# exporters) — this single file replaces all of them.
+#
+# Install once, from anywhere, with:
+#   pip install -r Pipeline/requirements.txt --break-system-packages
+#
+# (Pipeline/scripts/*.py -- the monthly extract/normalize/merge steps --
+# use only the standard library and need nothing from this file.)
+pandas>=2.0
+numpy>=1.24
+matplotlib>=3.7
+reportlab>=4.0

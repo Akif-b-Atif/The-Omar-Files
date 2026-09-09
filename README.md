@@ -2,7 +2,7 @@
 
 A self-hosted pipeline that turns a WhatsApp group chat into a
 permanent, searchable, text-only archive — plus a set of analysis
-tools that turn that archive into a ~200-page report: who talks the
+tools that turn that archive into a comprehensive report: who talks the
 most, when the group is active, favorite words and running jokes, and
 a breakdown of "Arcs" — the specific stretches of time the group's
 activity spiked, and why.
@@ -20,20 +20,20 @@ messages going all the way back to day one, sitting in his phone's
 local backup. It occurred to me that if he ever lost that phone,
 switched apps, or just tapped the wrong button, an entire shared
 history would be gone for good, for all of us, with no way to get it
-back.
+back. The data hoarder in me wouldn't allow for that.
 
 WhatsApp's own export feature wouldn't help: at the time, it capped a
 text export at the most recent ~45,000 messages, nowhere near enough
 for a chat that size (WhatsApp has since added the ability to pick a
-custom date range, but that came later). So instead I pulled the raw
-`msgstore.db` out of a Google Drive backup and decrypted it using
+custom date range, but at the time it was only for the latest 45,000 messages).  
+So instead I pulled the raw `msgstore.db` out of a Google Drive backup and decrypted it using
 [whatsapp-backup-downloader-decryptor](https://github.com/giacomoferretti/whatsapp-backup-downloader-decryptor),
 then wrote my own tooling to turn that into a proper, append-only text
 archive I could keep extending every month.
 
 That solved the "don't lose it" problem. But once I had a few hundred
-thousand timestamped messages sitting in a text file, the data hoarder
-in me couldn't leave it at that — I wanted to actually dig through it.
+thousand timestamped messages sitting in a text file, the data analyst
+in me took over — I wanted to actually dig through it.
 So I built a set of analysis tools on top of the archive: overall chat
 statistics, a search/explorer view, and an "Arc" detector that finds
 the group's high-activity periods and lets you name and describe each

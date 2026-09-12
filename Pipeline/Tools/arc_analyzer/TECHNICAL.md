@@ -35,12 +35,12 @@ python3 arc_analyzer.py
 ```
 
 With no arguments, this reads `Full_Archive.txt` from the project root
-and writes `arc_report.txt` and `arc_timeline.png` to the project root
-— the two files meant for regular reading. `arc_summary.csv` and
-`arc_summary.json` (the same data, structured, for further analysis)
-go into this module's own `data/` folder instead, since they're
-supplementary rather than something to read directly. Any of these can
-be overridden:
+and writes `arc_report.txt` and `arc_timeline.png` to `Reports/` at the
+project root (created automatically) — the two files meant for regular
+reading. `arc_summary.csv` and `arc_summary.json` (the same data,
+structured, for further analysis) go into this module's own `data/`
+folder instead, since they're supplementary rather than something to
+read directly. Any of these can be overridden:
 
 ```
 python3 arc_analyzer.py path/to/input.txt -o path/to/report_dir --data-dir path/to/data_dir
@@ -129,9 +129,9 @@ right period — the matching is positional, not content-aware.
 ## Output
 
 - `arc_report.txt` — plain-text summary of every segment, with the
-  editable ARC NAMES table at the top (project root).
+  editable ARC NAMES table at the top (`Reports/`).
 - `arc_timeline.png` — the rolling-average curve with Arc and Mini-arc
-  boundaries marked (project root). Each boundary is labeled with both
+  boundaries marked (`Reports/`). Each boundary is labeled with both
   its chronological label and its current name (e.g. `Arc 1: "Exam
   Season"`), pulled from the same `name` that `arc_report.txt`'s ARC
   NAMES table carries across reruns — a freshly detected segment that

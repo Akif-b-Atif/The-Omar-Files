@@ -32,7 +32,7 @@ What I do every month to keep the archive up to date. In case I forget.
      again next time an export includes them
 
 5. Done. `Full_Archive.txt` now includes this month, and every report
-   at the project root — `Full_Archive.pdf`, `chat_report.html`,
+   in `Reports/` — `Full_Archive.pdf`, `chat_report.html`,
    `chat_report.pdf`, `arc_report.txt`, `arc_timeline.png` — is
    regenerated automatically as the last part of the same run.
 
@@ -52,7 +52,7 @@ it. All of these are run from inside `Pipeline/`:
 | Just refresh the reports, no new export            | `python3 control.py` (no args) |
 | Only merge a new export in, skip the reports       | `python3 control.py merge 2026-09_raw.txt` |
 | Catch up on several missed exports at once, as one | `python3 control.py merge 2026-07_raw.txt 2026-08_raw.txt 2026-09_raw.txt` |
-| Only rebuild `Full_Archive.pdf`                    | `python3 control.py pdf` |
+| Only rebuild `Reports/Full_Archive.pdf`             | `python3 control.py pdf` |
 | Only rebuild the chat stats report                 | `python3 control.py chat` |
 | Only rebuild the arc report                        | `python3 control.py arc` |
 | Rebuild pdf + chat + arc together, no merge         | `python3 control.py reports` |

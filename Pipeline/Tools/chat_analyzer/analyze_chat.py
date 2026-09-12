@@ -15,9 +15,10 @@ Basic usage:
 By default this reads the repo's own Full_Archive.txt directly (no need to
 copy it here first, and no need to run this from any particular folder)
 and writes chat_report.html, chat_report.pdf, and chat_search_data.json
-directly to the project root, right next to Full_Archive.txt. Chart
-images used to build those files are cached in _chart_cache/ next to
-this script — that folder isn't a report itself, just working files.
+to Reports/ at the project root (created automatically), alongside every
+other generated report. Chart images used to build those files are
+cached in _chart_cache/ next to this script — that folder isn't a report
+itself, just working files.
 
 Edit chat_config.py first to plug in your own swear-word / laugh-word lists
 and tune thresholds.
@@ -69,7 +70,7 @@ from search_export import build_search_data, write_search_json
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parents[2]
 DEFAULT_INPUT = REPO_ROOT / "Full_Archive.txt"
-DEFAULT_OUTDIR = REPO_ROOT  # chat_report.html/.pdf + chat_search_data.json
+DEFAULT_OUTDIR = REPO_ROOT / "Reports"  # chat_report.html/.pdf + chat_search_data.json
 CHART_CACHE_DIR = SCRIPT_DIR / "_chart_cache"  # intermediate PNGs only — not a final report
 
 # arc_analyzer.py lives in the sibling Tools/arc_analyzer/ folder. Its
@@ -80,7 +81,7 @@ ARC_ANALYZER_DIR = SCRIPT_DIR.parent / "arc_analyzer"
 sys.path.insert(0, str(ARC_ANALYZER_DIR))
 import arc_names  # noqa: E402
 
-DEFAULT_ARC_REPORT = REPO_ROOT / "arc_report.txt"
+DEFAULT_ARC_REPORT = REPO_ROOT / "Reports" / "arc_report.txt"
 DEFAULT_ARC_SUMMARY = ARC_ANALYZER_DIR / "data" / "arc_summary.json"
 
 # Section names accepted by --sections. Order here = order they're rendered in.
@@ -222,7 +223,7 @@ Examples:
 """)
     ap.add_argument("--input", default=str(DEFAULT_INPUT), help="Path to the chat .txt export")
     ap.add_argument("--outdir", default=str(DEFAULT_OUTDIR),
-                     help="Where to write report files (default: the project root)")
+                     help="Where to write report files (default: Reports/ at the project root)")
     ap.add_argument("--min-messages", type=int, default=10,
                      help="Ignore senders with fewer than this many messages (default 10)")
     ap.add_argument("--out-name", default="chat_report",

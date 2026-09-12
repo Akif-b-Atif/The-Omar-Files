@@ -8,18 +8,19 @@ day.
 
 ## Where to look
 
-Everything anyone actually wants to read sits right here at the top
-level of this project:
+- **`Full_Archive.txt`**, right here at the top level of this project —
+  the whole archive, plain text, oldest message first. Open with
+  Notepad, TextEdit, or any text app. Use Ctrl+F (Cmd+F on Mac) to
+  search for a name, date, or word.
 
-- **`Full_Archive.txt`** — the whole archive, plain text, oldest message
-  first. Open with Notepad, TextEdit, or any text app. Use Ctrl+F
-  (Cmd+F on Mac) to search for a name, date, or word.
-- **`Full_Archive.pdf`** — the same thing, as a printable/shareable PDF.
-- **`chat_report.html`** — an interactive stats report (who talks most,
+Every other report lives one folder down, in `Reports/`:
+
+- **`Reports/Full_Archive.pdf`** — the same thing, as a printable/shareable PDF.
+- **`Reports/chat_report.html`** — an interactive stats report (who talks most,
   when the group's most active, favorite words and phrases, and more).
   Open it in a browser.
-- **`chat_report.pdf`** — the same report, as a static PDF.
-- **`arc_report.txt`** and **`arc_timeline.png`** — a breakdown of
+- **`Reports/chat_report.pdf`** — the same report, as a static PDF.
+- **`Reports/arc_report.txt`** and **`Reports/arc_timeline.png`** — a breakdown of
   periods when the group was unusually active ("Arcs") or had a
   smaller spike ("Mini-arcs"), what drove them, and a chart of activity
   over time. Each one starts out just numbered, but anyone can open

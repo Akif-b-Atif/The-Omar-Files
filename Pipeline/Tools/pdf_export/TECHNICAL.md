@@ -14,8 +14,7 @@ its variants) are skipped rather than printed as empty entries.
 
 ## Setup
 
-This needs `reportlab`, plus a Unicode-capable font file that isn't
-included in this project:
+This needs `reportlab`, plus a Unicode-capable font file:
 
 ```
 pip install -r ../../requirements.txt --break-system-packages
@@ -25,12 +24,10 @@ pip install -r ../../requirements.txt --break-system-packages
 `Pipeline/Tools/` — arc_analyzer, chat_analyzer, and pdf_export all draw
 from it, so installing it once covers all three.)
 
-Download **NotoSans-Regular.ttf** (Google Fonts) and place it in the
-shared `Pipeline/Tools/fonts/` folder (not this folder — that font
-folder is shared with chat_analyzer's PDF export too, so it only needs
-setting up once for both tools). It's not bundled here to keep this
-repository small; the script checks for it on startup and explains
-where to put it if it's missing.
+**NotoSans-Regular.ttf** is bundled in the shared `Pipeline/Tools/fonts/`
+folder (not this folder — that font folder is shared with
+chat_analyzer's PDF export too, so it only needs to exist once for both
+tools). Nothing to download; it's already tracked in the repo.
 
 `run_new_month.py` runs this automatically every month. Run it directly
 here only to regenerate the PDF on its own, without running the whole
@@ -43,8 +40,8 @@ python3 to_pdf.py
 ```
 
 With no arguments, this reads `Full_Archive.txt` from the project root
-and writes `Full_Archive.pdf` at the project root. Both can be
-overridden:
+and writes `Full_Archive.pdf` to `Reports/` at the project root
+(created automatically). Both can be overridden:
 
 ```
 python3 to_pdf.py path/to/input.txt path/to/output.pdf

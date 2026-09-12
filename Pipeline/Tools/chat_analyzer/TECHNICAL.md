@@ -14,10 +14,11 @@ pip install -r ../../requirements.txt --break-system-packages
 from it, so installing it once covers all three.)
 
 Optional: for emoji to render in the PDF (rather than blank boxes),
-download **NotoEmoji-Regular.ttf** (Google Fonts) and place it in the
-shared `Pipeline/Tools/fonts/` folder — shared with pdf_export's own
-font, so it only needs setting up once. Not required; the PDF still
-renders fine without it, just without emoji glyphs.
+**NotoEmoji-Regular.ttf** is bundled in the shared `Pipeline/Tools/fonts/`
+folder (shared with pdf_export's own font, so it only needs to exist
+once) — nothing to download, it's already tracked in the repo. Not
+required; the PDF still renders fine without it, just without emoji
+glyphs.
 
 No need to copy `Full_Archive.txt` anywhere — this reads it directly
 from the project root by default.
@@ -113,7 +114,7 @@ python3 analyze_chat.py --sections overview,timing,leaderboards,individuals,word
 | `--signature-top-n N` | Override `SIGNATURE_TOP_N_PER_PERSON` for this run only. |
 | `--last-period-days N` | Size of the built-in "last N days" section (default from `LAST_PERIOD_DAYS` in `chat_config.py`, normally 30). |
 | `--arc-summary PATH` | Path to arc_analyzer's `arc_summary.json` (default: `../arc_analyzer/data/arc_summary.json`). Only used by the "Arcs & Mini-arcs" section. |
-| `--arc-report PATH` | Path to `arc_report.txt` (default: project root), re-read fresh on every run so a hand-edited name/description shows up even without re-running `arc_analyzer.py` first. |
+| `--arc-report PATH` | Path to `arc_report.txt` (default: `Reports/` at the project root), re-read fresh on every run so a hand-edited name/description shows up even without re-running `arc_analyzer.py` first. |
 
 Valid `--sections` values: `overview`, `timing`, `leaderboards`,
 `individuals`, `words`, `mentions`, `funfacts`, `lastperiod`, `arcs`, or
@@ -135,11 +136,11 @@ useful for no benefit.
 ## 4. Output
 
 `chat_report.html`, `chat_report.pdf`, and `chat_search_data.json` are
-written directly to the project root (or a custom `--outdir`), right
-next to `Full_Archive.txt` — unless `--out-name` is set, in which case
-the `.html`/`.pdf` use that base name instead (the search JSON is
-always `chat_search_data.json`, since the HTML's Explorer tab fetches
-that exact filename):
+written to `Reports/` at the project root (or a custom `--outdir`),
+right next to every other generated report — unless `--out-name` is
+set, in which case the `.html`/`.pdf` use that base name instead (the
+search JSON is always `chat_search_data.json`, since the HTML's
+Explorer tab fetches that exact filename):
 - **`chat_report.html`** — open this in a browser. Has 9 sections:
   Overview, Timing, Leaderboards, Individuals, Words & Phrases,
   Mentions, Fun facts, a **Last N Days** snapshot, an **Arcs &
@@ -148,8 +149,8 @@ that exact filename):
   breakdown, person-vs-person comparison).
 - **`chat_search_data.json`** — data file the Explorer tab fetches at
   view-time. **Must stay in the same folder as the HTML file** — this
-  is why both land at the project root rather than inside this tool's
-  own folder.
+  is why both land in `Reports/` together rather than one of them
+  going elsewhere.
 - **`chat_report.pdf`** — same content minus the Explorer (PDFs can't
   run JavaScript), styled for printing/sharing. The two "activity
   fingerprint" charts (hourly rhythm, activity over time) each get
@@ -171,7 +172,7 @@ overwrite each other.
 Some browsers (mainly Chrome) block a local HTML file from `fetch()`-ing
 a local JSON file for security reasons when the HTML file is opened
 directly (`file://...`). If that happens, run a tiny local server
-instead, from the project root:
+instead, from `Reports/`:
 
 ```
 python3 -m http.server 8000

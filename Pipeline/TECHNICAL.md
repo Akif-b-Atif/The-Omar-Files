@@ -6,17 +6,19 @@ libraries — everything here runs as `python3 scriptname.py args`.
 
 ## The files that matter
 
-`Full_Archive.txt` and the other report files at the project root are
-the only things anyone needs to read regularly. Everything in this
-folder exists to produce and protect them.
+`Full_Archive.txt` at the project root and every report in `Reports/`
+alongside it are the only things anyone needs to read regularly.
+Everything in this folder exists to produce and protect them.
 
 ## Directory layout
 
 ```
 Pipeline/
 ├── TECHNICAL.md               <- this file
-├── control.py                 <- the control panel: update / merge / pdf / chat / arc / reports
+├── control.py                 <- the control panel: update / merge / pdf / chat / arc / reports / doctor
 ├── run_new_month.py           <- legacy alias for `control.py update` (still works)
+├── pytest.ini                 <- test config (registers the `smoke` marker)
+├── tests/                      <- pytest suite — see tests/README.md
 ├── identities.json            <- name/alias directory (source of truth for names)
 ├── normalized_exports/         <- each raw export, names normalized, mid-pipeline
 │   ├── 00_initial_port_normalized.txt
@@ -50,9 +52,9 @@ python3 control.py 2026-09_raw.txt          # full monthly update (bare filename
 python3 control.py update 2026-09_raw.txt   # same, spelled out
 python3 control.py merge 2026-07_raw.txt 2026-08_raw.txt 2026-09_raw.txt
                                              # merge several missed exports as one
-python3 control.py pdf                      # rebuild Full_Archive.pdf only
-python3 control.py arc                      # rebuild arc_report.* only
-python3 control.py chat [--min-messages N]  # rebuild chat_report.* only (reads arc_report.txt — run arc first if it needs refreshing too)
+python3 control.py pdf                      # rebuild Reports/Full_Archive.pdf only
+python3 control.py arc                      # rebuild Reports/arc_report.* only
+python3 control.py chat [--min-messages N]  # rebuild Reports/chat_report.* only (reads Reports/arc_report.txt — run arc first if it needs refreshing too)
 python3 control.py reports                  # rebuild pdf+arc+chat, no merge
 ```
 
@@ -85,6 +87,26 @@ other two from refreshing.
 `control.py`'s `update` under the hood, so both stay in sync
 automatically and there's exactly one place (`control.py`) the actual
 step-running logic lives.
+
+`control.py doctor` is a separate, standalone check — it doesn't touch
+the archive or any report. It verifies Python's version, that every
+package in `requirements.txt` is actually importable, that
+`identities.json` exists, that `Raw_Exports/` has something in it, and
+that the bundled fonts are present, printing a fix suggestion next to
+anything missing. Worth running right after cloning, or any time
+something fails in a way that looks environment-related rather than
+data-related. Exits non-zero if anything genuinely failed, so it's safe
+to use in a script.
+
+## Tests
+
+`tests/` has a small pytest suite: unit tests for `common.py`'s
+date/time parsing and `3_merge_export.py`'s merge/dedup logic, plus an
+end-to-end test that runs `control.py` against `sample_data/` in a
+throwaway copy of the repo and checks every promised output file gets
+written. Run it with `python3 -m pytest tests/ -v` from inside
+`Pipeline/` (needs `pytest`, included in `requirements.txt`). See
+`tests/README.md` for what's covered and what isn't yet.
 
 ## Why raw exports are kept forever
 
@@ -336,7 +358,7 @@ For the very first import (e.g. an original `port.txt`):
    command — with no need to type the command word)
 4. Answer any prompts about new or unrecognized senders.
 5. `Full_Archive.txt` now includes everything through this export, and
-   every report at the project root is regenerated right after, as the
+   every report in `Reports/` is regenerated right after, as the
    last part of the same run.
 
 If a report-regeneration step fails (usually a missing dependency —

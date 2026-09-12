@@ -43,12 +43,13 @@ python3 control.py merge 01_sample_export_part1.txt 02_sample_export_part2.txt
 python3 control.py reports
 ```
 
-That builds `Full_Archive.txt` / `Full_Archive.pdf` and every report
-(`chat_report.html`, `chat_report.pdf`, `arc_report.txt`,
-`arc_timeline.png`) at the project root, exactly like a real run would.
-Open `chat_report.html` in a browser (or run the small local server it
-tells you to, if the Explorer tab can't load its data over `file://`)
-to look around.
+That builds `Full_Archive.txt` / `Reports/Full_Archive.pdf` and every
+report (`Reports/chat_report.html`, `Reports/chat_report.pdf`,
+`Reports/arc_report.txt`, `Reports/arc_timeline.png`) — the archive at
+the project root, everything else in `Reports/` — exactly like a real
+run would. Open `chat_report.html` in a browser (or run the small
+local server it tells you to, if the Explorer tab can't load its data
+over `file://`) to look around.
 
 `identities.sample.json` is just a starting `identities.json` with the
 five sample senders (and Kabir's phone-number alias) already resolved,

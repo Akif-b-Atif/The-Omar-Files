@@ -18,7 +18,9 @@ I built this to work for two different audiences at once:
   get through every month.
 
 Everything about the layout follows from that split: every finished
-report lives as a flat file at the project root, all the code and
+report lives as a flat file in one dedicated `Reports/` folder (with
+`Full_Archive.txt` itself — the actual archive, not a derived report —
+at the project root, right where it's most visible), all the code and
 intermediate/working files are gathered into one folder out of the way,
 and there's exactly one other folder — for dropping in each month's
 export — that I ever need to touch by hand.
@@ -31,29 +33,33 @@ The-Omar-Files/
 ├── MONTHLY_GUIDE.md         <- short version of what I do every month
 ├── ARCHITECTURE.md          <- this file
 ├── Full_Archive.txt         <- THE archive. Everyone reads this one.
-├── Full_Archive.pdf         <- the archive, as a PDF
-├── chat_report.html         <- chat statistics report (interactive)
-├── chat_report.pdf          <- chat statistics report (static)
-├── chat_search_data.json    <- data file chat_report.html's search needs
-│                                (must stay next to it — see below)
-├── arc_report.txt           <- high-activity-period report (names/descriptions
-│                                editable at the top — see "ARC NAMES" in it)
-├── arc_timeline.png         <- chart accompanying arc_report.txt
+├── Reports/                 <- every generated report lands here
+│   ├── Full_Archive.pdf         <- the archive, as a PDF
+│   ├── chat_report.html         <- chat statistics report (interactive)
+│   ├── chat_report.pdf          <- chat statistics report (static)
+│   ├── chat_search_data.json    <- data file chat_report.html's search needs
+│   │                                (must stay next to it — see below)
+│   ├── arc_report.txt           <- high-activity-period report (names/descriptions
+│   │                                editable at the top — see "ARC NAMES" in it)
+│   └── arc_timeline.png         <- chart accompanying arc_report.txt
 ├── Raw_Exports/             <- where each month's raw export goes
 ├── sample_data/             <- fake export + identities to try the pipeline
 │                                without your own data — see its own README
 └── Pipeline/                <- all the code and mid-pipeline files
 ```
 
-Every finished report sits directly at the root, as a flat file, rather
-than nested in subfolders — someone who just wants to read something
-shouldn't have to know this project has an internal structure at all.
-`chat_search_data.json` looks like an odd one out in that list since
-it's not really "a report" on its own, but the Explorer tab in
+Every finished report sits in `Reports/`, as a flat file, rather than
+nested any deeper — someone who just wants to read something shouldn't
+have to hunt through this project's internal structure to find it, just
+know to look in one folder. `Full_Archive.txt` is the one thing that
+sits at the project root instead: it's the actual deliverable this
+project exists to produce and protect, not something derived from
+running a tool, so it gets the most visible spot there is.
+`chat_search_data.json` looks like an odd one out inside `Reports/`
+since it's not really "a report" on its own, but the Explorer tab in
 `chat_report.html` fetches it by a relative path at view-time, so it
 has to live in the same folder as the HTML file or that tab breaks —
-that's the one exception to "reports only" at the root, and it's driven
-by a hard technical requirement, not a choice.
+that's a hard technical requirement, not a choice.
 
 ## Raw_Exports/
 
@@ -108,12 +114,12 @@ control panel" in `Pipeline/TECHNICAL.md` for the full command list.
 around `control.py update`, for old habit's sake.
 
 Each tool under `Tools/` reads `Full_Archive.txt` directly from the
-project root by default and writes its finished report(s) straight
-back to the root too. Anything a tool produces that ISN'T a finished
-report — chart images used only to build an HTML/PDF file,
-supplementary data exports — stays inside that tool's own folder
-instead of cluttering the root. See each tool's own `TECHNICAL.md` for
-specifics.
+project root by default and writes its finished report(s) to `Reports/`
+at the project root (created automatically). Anything a tool produces
+that ISN'T a finished report — chart images used only to build an
+HTML/PDF file, supplementary data exports — stays inside that tool's
+own folder instead of cluttering `Reports/`. See each tool's own
+`TECHNICAL.md` for specifics.
 
 These three tools used to be three separate repositories, each keeping
 its own copy of the archive pulled in from the main project. That meant
@@ -173,7 +179,7 @@ shows up in the report.
    ever rewritten; this step only ever adds new lines or skips exact
    duplicates.
 4. **Reports refresh.** Once the archive itself is updated, every
-   report at the project root is regenerated so it stays in sync. `arc`
+   report in `Reports/` is regenerated so it stays in sync. `arc`
    runs before `chat` in this step specifically (not just alphabetically)
    since chat_analyzer's "Arcs & Mini-arcs" section depends on
    arc_analyzer's output — see `do_reports()` in `control.py`.
@@ -195,8 +201,9 @@ A few conventions I kept consistent across every module:
   script(s) and a `TECHNICAL.md`. Dependencies (`requirements.txt`) and
   font files live one level up, shared across every tool, rather than
   duplicated per folder (see above). None of the tool folders keep an
-  output folder for finished reports — those always go to the project
-  root, which is what keeps them visible.
+  output folder for finished reports — those always go to `Reports/`
+  at the project root, which is what keeps them all in one visible
+  place.
 - Every technical document is called `TECHNICAL.md`, written in first
   person, and covers just that one part of the project. Root-level
   documents (`README.md`, `MONTHLY_GUIDE.md`, `ARCHITECTURE.md`) are

@@ -32,16 +32,13 @@ Pipeline/logs/*
 !Pipeline/logs/.gitkeep
 
 # --- Generated reports -------------------------------------------------------
-# These are the finished deliverables the pipeline writes to the project
-# root every run. They're built from your archive, so they're exactly as
-# private as the archive itself.
+# These are the finished deliverables the pipeline writes to Reports/ at
+# the project root every run (Full_Archive.txt itself stays at the project
+# root — see above). They're built from your archive, so they're exactly
+# as private as the archive itself.
+Reports/*
+!Reports/.gitkeep
 /Full_Archive.txt
-/Full_Archive.pdf
-/chat_report.html
-/chat_report.pdf
-/chat_search_data.json
-/arc_report.txt
-/arc_timeline.png
 
 # --- Generated analysis data & caches ---------------------------------------
 # Cached charts and arc-summary data. These contain real names and per-person

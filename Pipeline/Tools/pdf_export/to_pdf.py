@@ -11,13 +11,12 @@ Usage:
 
 Both arguments are optional:
     input.txt   defaults to the repo's own Full_Archive.txt
-    output.pdf  defaults to Full_Archive.pdf at the project root
+    output.pdf  defaults to Reports/Full_Archive.pdf at the project root
 
-Requires NotoSans-Regular.ttf in the shared Tools/fonts/ folder (not
-included in this repo for size reasons — download it from Google Fonts
-and place it there) so the PDF renders correctly. That font folder is
-shared with chat_analyzer's PDF export, so it only needs to be set up
-once for both tools.
+Requires NotoSans-Regular.ttf in the shared Tools/fonts/ folder. That font
+is bundled with this repo (see Tools/fonts/) and shared with chat_analyzer's
+PDF export, so nothing extra needs to be downloaded or set up for either
+tool to render correctly.
 """
 import re
 import sys
@@ -41,7 +40,7 @@ from xml.sax.saxutils import escape
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parents[2]
 DEFAULT_INPUT = REPO_ROOT / "Full_Archive.txt"
-DEFAULT_OUTPUT = REPO_ROOT / "Full_Archive.pdf"
+DEFAULT_OUTPUT = REPO_ROOT / "Reports" / "Full_Archive.pdf"
 # Shared with chat_analyzer's pdf_report.py — one font folder for the
 # whole Pipeline instead of a separate copy per tool.
 FONT_DIR = SCRIPT_DIR.parent / "fonts"

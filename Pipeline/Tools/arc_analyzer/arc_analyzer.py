@@ -16,9 +16,10 @@ Lines that don't match the "<date> - <sender>: <text>" pattern are treated
 as a continuation of the previous message (e.g. multi-line texts).
 
 By default this reads the repo's own Full_Archive.txt directly and writes
-arc_report.txt and arc_timeline.png to the project root (right next to
-Full_Archive.txt), with arc_summary.csv/json in this module's own data/
-folder — no setup needed before running it.
+arc_report.txt and arc_timeline.png to Reports/ at the project root
+(created automatically, alongside every other generated report), with
+arc_summary.csv/json in this module's own data/ folder — no setup needed
+before running it.
 
 arc_report.txt opens with an editable "ARC NAMES" table, one line per
 arc/mini-arc, e.g. `arc 1: Miniarc-1`. Replace the text after the colon
@@ -51,8 +52,6 @@ import matplotlib.dates as mdates
 
 import arc_names
 
-# This file lives at Tools/arc_analyzer/arc_analyzer.py, two folders below
-# the repo root, where Full_Archive.txt lives.
 # This file lives at Pipeline/Tools/arc_analyzer/arc_analyzer.py, three
 # folders below the repo root, where Full_Archive.txt lives.
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -65,7 +64,7 @@ REPO_ROOT = SCRIPT_DIR.parents[2]
 class CONFIG:
     # --- I/O ---
     INPUT_FILE = str(REPO_ROOT / "Full_Archive.txt")   # the shared archive, read directly
-    OUTPUT_DIR = str(REPO_ROOT)                          # arc_report.txt / arc_timeline.png go here (project root)
+    OUTPUT_DIR = str(REPO_ROOT / "Reports")              # arc_report.txt / arc_timeline.png go here
     DATA_DIR = str(SCRIPT_DIR / "data")                  # arc_summary.csv/json go here (supplementary, not a final report)
 
     # --- Parsing ---
@@ -497,7 +496,7 @@ def main():
     parser = argparse.ArgumentParser(description="Detect Arcs/Mini-arcs/Filler in a group chat export.")
     parser.add_argument("input_file", nargs="?", default=CONFIG.INPUT_FILE)
     parser.add_argument("-o", "--outdir", default=CONFIG.OUTPUT_DIR,
-                         help="Where arc_report.txt and arc_timeline.png go (default: project root)")
+                         help="Where arc_report.txt and arc_timeline.png go (default: Reports/ at the project root)")
     parser.add_argument("--data-dir", default=CONFIG.DATA_DIR,
                          help="Where arc_summary.csv/json go (default: this module's own data/ folder)")
     args = parser.parse_args()

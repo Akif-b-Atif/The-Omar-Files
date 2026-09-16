@@ -267,9 +267,17 @@ def compute_individual_stats(df, participants, total_days):
         )
         n_questions = int(q_mask.sum())
 
+        # .astype(bool) guards against an edge case on empty slices (e.g. a
+        # participant with zero real-text messages within a given arc
+        # window): pandas' default "str" dtype for text columns makes
+        # .apply() on an empty Series come back as dtype "str" rather than
+        # bool, so .sum() returns "" (the string-concat identity) instead
+        # of 0, which then breaks int(). Forcing bool dtype here makes
+        # .sum() always return a real 0/1 count regardless of dtype
+        # inference on empty input.
         caps_mask = text_mine["text"].apply(
             lambda t: len(t) >= 4 and t == t.upper() and t != t.lower() and any(c.isalpha() for c in t)
-        )
+        ).astype(bool)
         n_shout = int(caps_mask.sum())
 
         n_excl = int(text_mine["text"].str.count("!").sum())

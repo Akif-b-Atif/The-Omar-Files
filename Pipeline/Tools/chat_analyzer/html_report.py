@@ -126,7 +126,7 @@ def render_overview(overall):
         stat_card(f'{overall["total_words_sent"]:,}', "Words sent"),
         stat_card(overall["avg_words_per_message"], "Avg words / message"),
         stat_card(overall["total_media"], "Media shared"),
-        stat_card(f'{overall["median_reply_gap_minutes"]} min', "Median gap between messages"),
+        stat_card(f'{overall["median_reply_gap_minutes"]} min', "Median reply gap"),
     ]
     return f"""
 <section id="overview">

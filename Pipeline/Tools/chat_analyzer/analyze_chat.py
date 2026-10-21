@@ -57,7 +57,7 @@ from parsing import parse_chat_file, build_dataframe, get_participants
 from stats_engine import (
     compute_overall, compute_time_distribution, compute_individual_stats,
     compute_word_stats, compute_phrase_stats, compute_leaderboards,
-    compute_arc_signature_stats,
+    compute_arc_signature_stats, prepare_lexical_text,
 )
 import chat_config as cfg
 import chart_builder as cb
@@ -69,6 +69,7 @@ from search_export import build_search_data, write_search_json
 # folders below the repo root, where Full_Archive.txt lives.
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parents[2]
+IDENTITIES_PATH = REPO_ROOT / "Pipeline" / "identities.json"
 DEFAULT_INPUT = REPO_ROOT / "Full_Archive.txt"
 DEFAULT_OUTDIR = REPO_ROOT / "Reports"  # chat_report.html/.pdf + chat_search_data.json
 CHART_CACHE_DIR = SCRIPT_DIR / "_chart_cache"  # intermediate PNGs only — not a final report
@@ -131,13 +132,32 @@ def load_arc_segments(arc_summary_path, arc_report_path):
     return segments
 
 
-def compute_bundle(df, participants, cfg_profile, log_label=""):
+def _load_mention_aliases():
+    if not IDENTITIES_PATH.exists():
+        return {}
+    with open(IDENTITIES_PATH, "r", encoding="utf-8") as f:
+        identities = json.load(f)
+    targets = {}
+    for person in identities.get("identities", []):
+        for alias in person.get("aliases", []):
+            key = alias.strip().casefold()
+            if key:
+                targets.setdefault(key, set()).add(person["name"])
+    return {
+        alias: next(iter(names))
+        for alias, names in targets.items()
+        if len(names) == 1
+    }
+
+
+def compute_bundle(df, participants, cfg_profile, log_label="", aliases=None):
     """Runs the whole (non-chart) stats pipeline on a given dataframe +
     participant list + threshold profile, returning one dict bundle. Used
     for the main report, the built-in "last N days" section, and any
     custom CLI slice — they're all just different (df, participants, cfg)
     combos fed through the same pipeline."""
     prefix = f"[{log_label}] " if log_label else ""
+    df = prepare_lexical_text(df, participants, aliases)
     log(f"{prefix}Computing overall stats ...")
     overall = compute_overall(df)
 
@@ -145,16 +165,22 @@ def compute_bundle(df, participants, cfg_profile, log_label=""):
     timedist = compute_time_distribution(df)
 
     log(f"{prefix}Computing per-person stats ...")
-    individual_stats, mention_pairs = compute_individual_stats(df, participants, overall["total_days_spanned"])
+    individual_stats, mention_pairs = compute_individual_stats(
+        df, participants, overall["total_days_spanned"], aliases=aliases
+    )
 
     log(f"{prefix}Computing leaderboards ...")
     lb = compute_leaderboards(individual_stats)
 
     log(f"{prefix}Computing most-repeated words ...")
-    wordstats = compute_word_stats(df, participants, individual_stats, cfg=cfg_profile)
+    wordstats = compute_word_stats(
+        df, participants, individual_stats, cfg=cfg_profile, aliases=aliases
+    )
 
     log(f"{prefix}Computing most-repeated phrases ...")
-    phrasestats = compute_phrase_stats(df, participants, individual_stats, cfg=cfg_profile)
+    phrasestats = compute_phrase_stats(
+        df, participants, individual_stats, cfg=cfg_profile, aliases=aliases
+    )
 
     return {
         "overall": overall, "timedist": timedist, "individual_stats": individual_stats,
@@ -314,6 +340,13 @@ def main():
     records = parse_chat_file(args.input)
     log(f"Parsed {len(records):,} raw lines/messages.")
     df_full = build_dataframe(records)
+    latest_timestamp = df_full["timestamp"].max()
+    if latest_timestamp.date() > pd.Timestamp.now().date():
+        log(
+            f"WARNING: archive contains messages through {latest_timestamp.date()}, "
+            "which is in the future relative to today. Dates are retained as parsed; "
+            "check the source archive if this is unexpected."
+        )
 
     people_filter = [p.strip() for p in args.people.split(",") if p.strip()] if args.people else None
     custom_slice = bool(args.start_date or args.end_date or people_filter)
@@ -334,7 +367,8 @@ def main():
                   f"a wider date range, or check --people / --input.")
     log(f"Found {len(participants)} participants (>= {args.min_messages} messages each): {', '.join(participants)}")
 
-    bundle = compute_bundle(df, participants, cfg_profile)
+    mention_aliases = _load_mention_aliases()
+    bundle = compute_bundle(df, participants, cfg_profile, aliases=mention_aliases)
 
     log("Rendering charts ...")
     colors = cb.person_colors(participants)
@@ -363,7 +397,10 @@ def main():
                 SIGNATURE_MIN_MESSAGES=cfg.LAST_PERIOD_SIGNATURE_MIN_MESSAGES,
                 SIGNATURE_TOP_N_PER_PERSON=cfg.LAST_PERIOD_SIGNATURE_TOP_N_PER_PERSON,
             )
-            lp_bundle = compute_bundle(df_lp, lp_participants, lp_cfg, log_label=f"last {days}d")
+            lp_bundle = compute_bundle(
+                df_lp, lp_participants, lp_cfg, log_label=f"last {days}d",
+                aliases=mention_aliases,
+            )
             lp_colors = cb.person_colors(lp_participants)
             lp_charts = build_charts(lp_bundle, lp_colors, prefix="lp_")
             last_period = {"days": days, "bundle": lp_bundle, "charts": lp_charts, "cfg": lp_cfg}
@@ -396,7 +433,10 @@ def main():
                 if not arc_participants:
                     log(f"Skipping {label} — no messages in that window.")
                     continue
-                arc_bundle = compute_bundle(df_arc, arc_participants, arc_cfg, log_label=label)
+                arc_bundle = compute_bundle(
+                    df_arc, arc_participants, arc_cfg, log_label=label,
+                    aliases=mention_aliases,
+                )
 
                 # Per-arc "signature words/phrases" are NOT the same
                 # per-person breakdown as the main report's — that would
@@ -405,7 +445,9 @@ def main():
                 # phrase frequencies against the ENTIRE archive (`df`) to
                 # find this arc's own topic fingerprint, and swap that in
                 # for the per-person version compute_bundle computed above.
-                arc_sig = compute_arc_signature_stats(df_arc, df, arc_participants, arc_cfg)
+                arc_sig = compute_arc_signature_stats(
+                    df_arc, df, arc_participants, arc_cfg, aliases=mention_aliases
+                )
                 arc_bundle["wordstats"]["signature_words"] = arc_sig["signature_words"]
                 arc_bundle["phrasestats"]["signature_phrases"] = arc_sig["signature_phrases"]
 

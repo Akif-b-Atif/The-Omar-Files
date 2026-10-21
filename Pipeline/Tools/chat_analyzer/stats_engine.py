@@ -26,14 +26,29 @@ from baseline_corpus import BASELINE_MESSAGES
 _LINEBREAK_RE = re.compile(r"\\n|\n")
 
 
-def _clean_for_wordphrase(text):
+def _clean_for_wordphrase(text, mention_pattern=None):
     """Text cleanup used only for word/phrase/signature frequency analysis
     (not for display or other stats): collapse linebreaks to spaces, and
     strip out "@tag" mentions entirely, since a tag is not a word or part
     of a phrase."""
     t = _LINEBREAK_RE.sub(" ", text)
+    if mention_pattern is not None:
+        t = mention_pattern.sub(" ", t)
     t = TAG_RE.sub(" ", t)
     return t
+
+
+def prepare_lexical_text(df, participants, aliases=None):
+    """Prepare text and word counts with known multiword mentions excluded."""
+    mention_pattern, _ = _compile_mention_patterns(participants, aliases)
+    prepared = df.copy()
+    prepared["lexical_text"] = prepared["analysis_text"].apply(
+        lambda text: _clean_for_wordphrase(text, mention_pattern)
+    )
+    prepared["word_count"] = prepared["lexical_text"].apply(
+        lambda text: len(WORD_RE.findall(text))
+    )
+    return prepared
 
 
 def _iso(ts):
@@ -124,7 +139,10 @@ def compute_overall(df):
     gap_end_ts = ts_sorted.loc[top_gap_idx[0]] if len(top_gap_idx) else None
     gap_start_ts = ts_sorted.loc[top_gap_idx[0] - 1] if len(top_gap_idx) else None
 
-    msg_gaps = real["timestamp"].sort_values().diff().dropna().dt.total_seconds()
+    reply_rows = real.sort_values("timestamp").reset_index(drop=True)
+    reply_gaps = reply_rows["timestamp"].diff().dt.total_seconds()
+    same_sender = reply_rows["sender"].eq(reply_rows["sender"].shift())
+    msg_gaps = reply_gaps.where((~same_sender) & (reply_gaps > 0)).dropna()
 
     # top 3 longest single messages, by word count, across everyone
     text_real = real[real["is_real_text"]]
@@ -162,7 +180,7 @@ def compute_overall(df):
 
     return {
         "total_messages": int(len(real)),
-        "total_text_messages": int(real["is_real_text"].sum()),
+        "total_text_messages": int((real["is_real_text"] & ~real["is_media"]).sum()),
         "total_media": int(real["is_media"].sum()),
         "total_deleted": int(real["is_deleted"].sum()),
         "total_calls": int(real["is_call"].sum()),
@@ -225,13 +243,13 @@ def compute_time_distribution(df):
 
 # ---------------------------------------------------------- per-person ----
 
-def compute_individual_stats(df, participants, total_days):
+def compute_individual_stats(df, participants, total_days, aliases=None):
     real = df[~df["is_system"]]
     out = {}
     total_msgs_all = len(real)
 
     # precompute mention data first (needs participants)
-    mention_given, mention_received, mention_pairs = _compute_mentions(real, participants)
+    mention_given, mention_received, mention_pairs = _compute_mentions(real, participants, aliases)
 
     # single-pass computation of double-texting & conversation-starts for everyone
     real_sorted_all = real.sort_values("timestamp")
@@ -249,7 +267,7 @@ def compute_individual_stats(df, participants, total_days):
     for person in participants:
         mine = real[real["sender"] == person]
         text_mine = mine[mine["is_real_text"]]
-        all_text = " ".join(text_mine["text"].tolist())
+        all_text = " ".join(text_mine["lexical_text"].tolist())
         # _clean_for_wordphrase strips "@tag" mentions before tokenizing,
         # since a tag isn't vocabulary — otherwise "@Sarah" would inflate
         # someone's vocabulary/word-count stats with everyone else's names.
@@ -262,7 +280,7 @@ def compute_individual_stats(df, participants, total_days):
         swear_hits = len(SWEAR_PATTERN.findall(all_text)) if SWEAR_PATTERN else 0
         laugh_hits = len(LAUGH_PATTERN.findall(all_text)) if LAUGH_PATTERN else 0
 
-        q_mask = text_mine["text"].str.contains(r"\?") | text_mine["text"].apply(
+        q_mask = text_mine["lexical_text"].str.contains(r"\?") | text_mine["lexical_text"].apply(
             lambda t: bool(QSTART_PATTERN.match(t.strip())) if QSTART_PATTERN else False
         )
         n_questions = int(q_mask.sum())
@@ -275,12 +293,12 @@ def compute_individual_stats(df, participants, total_days):
         # of 0, which then breaks int(). Forcing bool dtype here makes
         # .sum() always return a real 0/1 count regardless of dtype
         # inference on empty input.
-        caps_mask = text_mine["text"].apply(
+        caps_mask = text_mine["lexical_text"].apply(
             lambda t: len(t) >= 4 and t == t.upper() and t != t.lower() and any(c.isalpha() for c in t)
         ).astype(bool)
         n_shout = int(caps_mask.sum())
 
-        n_excl = int(text_mine["text"].str.count("!").sum())
+        n_excl = int(text_mine["lexical_text"].str.count("!").sum())
         emojis = EMOJI_RE.findall(all_text)
         emoji_counter = Counter()
         for e in emojis:
@@ -304,7 +322,7 @@ def compute_individual_stats(df, participants, total_days):
         out[person] = {
             "total_messages": int(n_msgs),
             "pct_of_all_messages": round(100 * n_msgs / total_msgs_all, 2) if total_msgs_all else 0,
-            "total_text_messages": int(len(text_mine)),
+            "total_text_messages": int((mine["is_real_text"] & ~mine["is_media"]).sum()),
             "media_sent": int(mine["is_media"].sum()),
             "deleted_sent": int(mine["is_deleted"].sum()),
             "edited_sent": int(mine["is_edited"].sum()),
@@ -347,32 +365,43 @@ def compute_individual_stats(df, participants, total_days):
     return out, mention_pairs
 
 
-def _compile_mention_patterns(participants):
-    variants = []  # (pattern_str, canonical_name)
+def _compile_mention_patterns(participants, aliases=None):
+    variant_targets = defaultdict(set)
     for p in participants:
-        variants.append((p, p))
+        variant_targets[p.casefold()].add(p)
         first = p.split()[0]
         if first != p:
-            variants.append((first, p))
-    variants = sorted(set(variants), key=lambda x: -len(x[0]))
+            variant_targets[first.casefold()].add(p)
+    for alias, canonical in (aliases or {}).items():
+        if "@" not in alias:
+            variant_targets[alias.strip().casefold()].add(canonical)
+    # Ambiguous aliases or first names are deliberately not attributed.
+    variants = [(variant, next(iter(targets)))
+                for variant, targets in variant_targets.items()
+                if variant and len(targets) == 1]
+    variants.sort(key=lambda x: -len(x[0]))
     alt = "|".join(re.escape(v) for v, _ in variants)
-    pattern = re.compile(r"@(" + alt + r")\b", re.I)
+    if not alt:
+        return re.compile(r"(?!)"), {}
+    pattern = re.compile(r"@(" + alt + r")(?![\w@'-])", re.I | re.UNICODE)
     lookup = {}
     for v, canon in variants:
-        lookup[v.lower()] = canon
+        lookup[v] = canon
     return pattern, lookup
 
 
-def _compute_mentions(real, participants):
-    pattern, lookup = _compile_mention_patterns(participants)
+def _compute_mentions(real, participants, aliases=None):
+    pattern, lookup = _compile_mention_patterns(participants, aliases)
     given = Counter()
     received = Counter()
     pairs = Counter()
+    participant_set = set(participants)
 
-    for sender, text in zip(real["sender"], real["text"]):
+    text_column = "analysis_text" if "analysis_text" in real else "text"
+    for sender, text in zip(real["sender"], real[text_column]):
         for m in pattern.finditer(text):
-            canon = lookup.get(m.group(1).lower())
-            if canon is None:
+            canon = lookup.get(m.group(1).casefold())
+            if canon is None or canon not in participant_set:
                 continue
             given[sender] += 1
             received[canon] += 1
@@ -437,7 +466,7 @@ def _comparative_rank(target_counter, target_total, baseline_counter, baseline_t
     return scored[:top_n]
 
 
-def _build_word_index(df, cfg, apply_stopwords=True):
+def _build_word_index(df, cfg, apply_stopwords=True, mention_pattern=None):
     """Tokenizes every real text message in `df` (tags/@mentions and
     linebreaks stripped first — see _clean_for_wordphrase) and returns a
     dict of counters/lookups shared by compute_word_stats and
@@ -449,8 +478,10 @@ def _build_word_index(df, cfg, apply_stopwords=True):
     first_seen, last_seen = {}, {}
     first_seen_by, last_seen_by = {}, {}
 
-    for sender, text, ts in zip(real["sender"], real["text"], real["timestamp"]):
-        toks = [t for t in tokenize(_clean_for_wordphrase(text)) if len(t) >= cfg.MIN_WORD_LENGTH]
+    text_column = "analysis_text" if "analysis_text" in real else "text"
+    for sender, text, ts in zip(real["sender"], real[text_column], real["timestamp"]):
+        toks = [t for t in tokenize(_clean_for_wordphrase(text, mention_pattern))
+                if len(t) >= cfg.MIN_WORD_LENGTH]
         if apply_stopwords:
             toks = [t for t in toks if t not in cfg.EXTRA_STOPWORDS]
         for t in toks:
@@ -470,7 +501,7 @@ def _build_word_index(df, cfg, apply_stopwords=True):
     }
 
 
-def _build_phrase_index(df, cfg):
+def _build_phrase_index(df, cfg, mention_pattern=None):
     """Same idea as _build_word_index, but for whole-message "phrases"
     (see _normalize_message) — shared by compute_phrase_stats and
     compute_arc_signature_stats."""
@@ -481,8 +512,9 @@ def _build_phrase_index(df, cfg):
     first_seen_by, last_seen_by = {}, {}
     display_text = {}
 
-    for sender, text, ts in zip(real["sender"], real["text"], real["timestamp"]):
-        norm = _normalize_message(_clean_for_wordphrase(text))
+    text_column = "analysis_text" if "analysis_text" in real else "text"
+    for sender, text, ts in zip(real["sender"], real[text_column], real["timestamp"]):
+        norm = _normalize_message(_clean_for_wordphrase(text, mention_pattern))
         if len(norm) < cfg.MIN_PHRASE_LENGTH:
             continue
         global_counter[norm] += 1
@@ -494,7 +526,9 @@ def _build_phrase_index(df, cfg):
             last_seen[norm] = ts
             last_seen_by[norm] = sender
         if norm not in display_text:
-            display_text[norm] = _WS_RE.sub(" ", _clean_for_wordphrase(text)).strip()[:200]
+            display_text[norm] = _WS_RE.sub(
+                " ", _clean_for_wordphrase(text, mention_pattern)
+            ).strip()[:200]
 
     return {
         "counter": global_counter, "per_person": per_person_counter,
@@ -543,11 +577,14 @@ def _group_signature_by_person(signature_all, participants, individual_stats,
     return result
 
 
-def compute_word_stats(df, participants, individual_stats=None, cfg=cfg):
+def compute_word_stats(df, participants, individual_stats=None, cfg=cfg,
+                       aliases=None, mention_pattern=None):
     """cfg: optional override namespace (see chat_config.make_profile) so
     this can be re-run with looser noise thresholds — e.g. for a "last N
     days" snapshot, which has far fewer messages than the full archive."""
-    idx = _build_word_index(df, cfg, apply_stopwords=True)
+    if mention_pattern is None:
+        mention_pattern, _ = _compile_mention_patterns(participants, aliases)
+    idx = _build_word_index(df, cfg, apply_stopwords=True, mention_pattern=mention_pattern)
     global_counter, per_person_counter = idx["counter"], idx["per_person"]
     first_seen, last_seen = idx["first_seen"], idx["last_seen"]
     first_seen_by, last_seen_by = idx["first_seen_by"], idx["last_seen_by"]
@@ -608,7 +645,8 @@ def compute_word_stats(df, participants, individual_stats=None, cfg=cfg):
     }
 
 
-def compute_phrase_stats(df, participants, individual_stats=None, cfg=cfg):
+def compute_phrase_stats(df, participants, individual_stats=None, cfg=cfg,
+                         aliases=None, mention_pattern=None):
     """A "phrase" here means a whole message, not an n-gram fragment. Two
     messages are treated as the SAME phrase if they're identical once you
     ignore emojis, punctuation, and capitalization (see _normalize_message).
@@ -618,7 +656,9 @@ def compute_phrase_stats(df, participants, individual_stats=None, cfg=cfg):
 
     cfg: optional override namespace (see chat_config.make_profile), same
     idea as compute_word_stats."""
-    idx = _build_phrase_index(df, cfg)
+    if mention_pattern is None:
+        mention_pattern, _ = _compile_mention_patterns(participants, aliases)
+    idx = _build_phrase_index(df, cfg, mention_pattern=mention_pattern)
     global_counter, per_person_counter = idx["counter"], idx["per_person"]
     first_seen, last_seen = idx["first_seen"], idx["last_seen"]
     first_seen_by, last_seen_by = idx["first_seen_by"], idx["last_seen_by"]
@@ -662,7 +702,7 @@ def compute_phrase_stats(df, participants, individual_stats=None, cfg=cfg):
     return {"top_phrases": top_phrases, "signature_phrases": signature_phrases}
 
 
-def compute_arc_signature_stats(df_arc, df_archive, participants, cfg=cfg):
+def compute_arc_signature_stats(df_arc, df_archive, participants, cfg=cfg, aliases=None):
     """Signature words/phrases for ONE arc/mini-arc.
 
     This intentionally does NOT reuse compute_word_stats'/compute_phrase_
@@ -683,8 +723,13 @@ def compute_arc_signature_stats(df_arc, df_archive, participants, cfg=cfg):
 
     Returns {"signature_words": [...], "signature_phrases": [...]}, each a
     flat list (NOT grouped by person) ranked by that comparative score."""
-    word_idx_arc = _build_word_index(df_arc, cfg, apply_stopwords=True)
-    word_idx_archive = _build_word_index(df_archive, cfg, apply_stopwords=True)
+    mention_pattern, _ = _compile_mention_patterns(participants, aliases)
+    word_idx_arc = _build_word_index(
+        df_arc, cfg, apply_stopwords=True, mention_pattern=mention_pattern
+    )
+    word_idx_archive = _build_word_index(
+        df_archive, cfg, apply_stopwords=True, mention_pattern=mention_pattern
+    )
     arc_counter, per_person = word_idx_arc["counter"], word_idx_arc["per_person"]
     archive_counter = word_idx_archive["counter"]
     arc_total = sum(arc_counter.values())
@@ -706,8 +751,8 @@ def compute_arc_signature_stats(df_arc, df_archive, participants, cfg=cfg):
             "last_instance": {"by": word_idx_arc["last_seen_by"][w], "at": _iso(word_idx_arc["last_seen"][w])},
         })
 
-    phrase_idx_arc = _build_phrase_index(df_arc, cfg)
-    phrase_idx_archive = _build_phrase_index(df_archive, cfg)
+    phrase_idx_arc = _build_phrase_index(df_arc, cfg, mention_pattern=mention_pattern)
+    phrase_idx_archive = _build_phrase_index(df_archive, cfg, mention_pattern=mention_pattern)
     arc_pcounter, per_person_p = phrase_idx_arc["counter"], phrase_idx_arc["per_person"]
     archive_pcounter = phrase_idx_archive["counter"]
     arc_ptotal = sum(arc_pcounter.values())

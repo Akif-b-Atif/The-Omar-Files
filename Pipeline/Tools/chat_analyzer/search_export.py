@@ -23,7 +23,10 @@ def build_search_data(df, participants, individual_stats, overall, timedist):
         timestamps.append(int(row.timestamp.timestamp()))
         senders.append(sender_index[sender])
         if row.is_media:
-            texts.append("")
+            texts.append(
+                row.analysis_text.replace("\n", " ").strip()
+                if row.is_real_text else ""
+            )
             flags.append(1)
         elif row.is_deleted:
             texts.append("")

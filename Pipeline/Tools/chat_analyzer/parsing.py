@@ -21,12 +21,15 @@ MSG_RE = re.compile(
 
 EDITED_SUFFIX_RE = re.compile(r"\s*<This message was edited>\s*$", re.I)
 MEDIA_RE = re.compile(
-    r"<\s*(?:forwarded\s+)?(?:media|image|video|gif|sticker|audio|"
+    r"<\s*(?:unknown|album)\s+message\s*>"
+    r"|<\s*(?:forwarded\s+)?(?:media|image|video|gif|sticker|audio|"
     r"voice(?:\s+message)?|album|contact\s+card|document)\s+omitted\s*>"
     r"|(?:^|\s)(?:forwarded\s+)?(?:media|image|video|gif|sticker|audio|voice(?:\s+message)?|"
-    r"album|contact\s+card|document)\s+omitted(?:$|\s)",
+    r"album|contact\s+card|document)\s+omitted(?:$|\s)"
+    r"|(?:^|\s)<\s*(?:unknown|album)\s+message\s*>(?:$|\s)",
     re.I,
 )
+FORWARDED_RE = re.compile(r"\[\s*forwarded\s*\]", re.I)
 WAITING_RE = re.compile(
     r"waiting for this message(?:\s*\.?\s*this may take a while\.?)?",
     re.I,
@@ -156,6 +159,7 @@ def build_dataframe(records):
 def _text_for_analysis(text):
     """Remove export placeholders from analysis without changing source text."""
     text = MEDIA_RE.sub(" ", text)
+    text = FORWARDED_RE.sub(" ", text)
     text = WAITING_RE.sub(" ", text)
     text = UNPARSED_RE.sub(" ", text)
     return re.sub(r"\s+", " ", text).strip()

@@ -9,12 +9,14 @@ sys.path.insert(0, str(ANALYZER_DIR))
 from parsing import build_dataframe  # noqa: E402
 from search_export import build_search_data  # noqa: E402
 from stats_engine import (  # noqa: E402
+    _build_phrase_index,
     _clean_for_wordphrase,
     _compile_mention_patterns,
     _compute_mentions,
     compute_overall,
     prepare_lexical_text,
 )
+import chat_config as cfg  # noqa: E402
 
 
 def _records(messages):
@@ -127,6 +129,32 @@ def test_captioned_media_remains_searchable():
     assert data["texts"] == ["Viva mein phat-te hue"]
     assert compute_overall(df)["total_text_messages"] == 0
     assert compute_overall(df)["total_media"] == 1
+
+
+def test_unknown_album_and_forwarded_markers_do_not_become_phrases():
+    df = build_dataframe(_records([
+        (0, "A", "<unknown message>"),
+        (1, "A", "<unknown message>"),
+        (2, "A", "<album message>"),
+        (3, "A", "<album message>"),
+        (4, "A", "[Forwarded]"),
+        (5, "A", "[Forwarded]"),
+        (6, "A", "[Forwarded] <image omitted>"),
+        (7, "A", "[Forwarded] <video omitted>"),
+        (8, "A", "[Forwarded] <video omitted> Viva mein phat-te hue"),
+    ]))
+
+    assert df["is_media"].tolist() == [
+        True, True, True, True, False, False, True, True, True
+    ]
+    assert df["analysis_text"].tolist() == [
+        "", "", "", "", "", "", "", "", "Viva mein phat-te hue"
+    ]
+    assert df["is_real_text"].tolist() == [
+        False, False, False, False, False, False, False, False, True
+    ]
+    phrases = _build_phrase_index(df, cfg)["counter"]
+    assert phrases == {"viva mein phat te hue": 1}
 
 
 def test_future_archive_dates_are_preserved():

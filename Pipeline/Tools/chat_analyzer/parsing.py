@@ -21,11 +21,17 @@ MSG_RE = re.compile(
 
 EDITED_SUFFIX_RE = re.compile(r"\s*<This message was edited>\s*$", re.I)
 MEDIA_RE = re.compile(
-    r"^[" + _INVISIBLE + r"]*(<Media omitted>|image omitted|video omitted|"
-    r"GIF omitted|sticker omitted|audio omitted|Contact card omitted|"
-    r"document omitted)\s*$",
+    r"<\s*(?:forwarded\s+)?(?:media|image|video|gif|sticker|audio|"
+    r"voice(?:\s+message)?|album|contact\s+card|document)\s+omitted\s*>"
+    r"|(?:^|\s)(?:forwarded\s+)?(?:media|image|video|gif|sticker|audio|voice(?:\s+message)?|"
+    r"album|contact\s+card|document)\s+omitted(?:$|\s)",
     re.I,
 )
+WAITING_RE = re.compile(
+    r"waiting for this message(?:\s*\.?\s*this may take a while\.?)?",
+    re.I,
+)
+UNPARSED_RE = re.compile(r"(?m)^\s*\[UNPARSED\s*-\s*review this line\].*$", re.I)
 DELETED_RE = re.compile(r"(?:this message was deleted|you deleted this message)", re.I)
 CALL_RE = re.compile(r"(?:missed voice call|missed video call|^voice call$|^video call$)", re.I)
 
@@ -124,14 +130,15 @@ def build_dataframe(records):
     df["text"] = df["text"].apply(lambda t: EDITED_SUFFIX_RE.sub("", t))
 
     stripped = df["text"].str.strip()
-    df["is_media"] = stripped.str.match(MEDIA_RE)
+    df["is_media"] = stripped.str.contains(MEDIA_RE)
     df["is_deleted"] = stripped.str.contains(DELETED_RE)
     df["is_call"] = stripped.str.contains(CALL_RE)
     df["is_system"] = df["is_system"].fillna(False)
 
+    df["analysis_text"] = df["text"].apply(_text_for_analysis)
     df["is_real_text"] = (
-        (~df["is_system"]) & (~df["is_media"]) & (~df["is_deleted"]) & (~df["is_call"])
-        & (df["text"].str.strip().str.len() > 0)
+        (~df["is_system"]) & (~df["is_deleted"]) & (~df["is_call"])
+        & (df["analysis_text"].str.strip().str.len() > 0)
     )
 
     df["date"] = df["timestamp"].dt.date
@@ -139,11 +146,19 @@ def build_dataframe(records):
     df["weekday"] = df["timestamp"].dt.day_name()
     df["weekday_num"] = df["timestamp"].dt.weekday
     df["month_period"] = df["timestamp"].dt.to_period("M").astype(str)
-    df["char_count"] = df["text"].str.len()
-    df["word_count"] = df["text"].apply(lambda t: len(WORD_RE.findall(t)))
+    df["char_count"] = df["analysis_text"].str.len()
+    df["word_count"] = df["analysis_text"].apply(lambda t: len(WORD_RE.findall(t)))
 
     df = df.sort_values("timestamp").reset_index(drop=True)
     return df
+
+
+def _text_for_analysis(text):
+    """Remove export placeholders from analysis without changing source text."""
+    text = MEDIA_RE.sub(" ", text)
+    text = WAITING_RE.sub(" ", text)
+    text = UNPARSED_RE.sub(" ", text)
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def get_participants(df, min_messages=1):

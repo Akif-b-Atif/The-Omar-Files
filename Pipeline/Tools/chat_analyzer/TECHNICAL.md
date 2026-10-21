@@ -183,7 +183,7 @@ Firefox usually works fine either way.
 ## What's computed
 
 **Overall:** total messages, days spanned, active vs silent days, avg
-messages/day, median reply gap, total words/characters, media/deleted/
+messages/day, median gap between different senders, total words/characters, media/deleted/
 edited counts, plus the top-3 "fun facts" lists described below.
 
 **Timing:** messages per day (full timeline + 7-day rolling average),
@@ -279,17 +279,22 @@ rather than shown empty or crashing the whole run.
 - The parser expects `Full_Archive.txt`'s own format:
   `DD-Mon-YYYY, HH:MM - Sender: Message` (seconds, if present in an
   older archive, are also accepted). It also handles multi-line
-  messages, `<Media omitted>`, deleted messages, edited-message tags,
-  and WhatsApp system messages (added/left/etc — these are excluded
-  from per-person stats but counted separately).
+  messages, media placeholders (including captioned media), deleted
+  messages, edited-message tags, waiting-for-message notices, and
+  WhatsApp system messages (added/left/etc — these are excluded from
+  per-person stats but counted separately). Placeholder text is kept
+  for display but excluded from lexical analysis; captions remain
+  searchable and contribute their words.
 - If the input file's date/time format differs (e.g. 12-hour with
   AM/PM, or `[DD/MM/YY, HH:MM:SS]` brackets — which shouldn't happen if
   it came from `Pipeline/`, but could if a different file is passed via
   `--input`), the regexes at the top of `parsing.py` (`MSG_RE`,
   `DATE_PREFIX_RE`) need a small adjustment.
-- Mentions are detected by matching `@Name` against the actual sender
-  names (and their first names) in the archive — it won't catch a tag
-  typed with a nickname that isn't part of anyone's display name.
+- Mentions are detected by matching whole `@Name` tags against
+  participant names, unambiguous first names, and aliases in
+  `identities.json`. Recognized multiword tags are attributed to their
+  canonical identity and removed from lexical analysis. Unknown or
+  ambiguous names are not attributed.
 - "Nouns-only" word filtering is a curated stopword list
   (`EXTRA_STOPWORDS`), not a real part-of-speech tagger — it's close
   to nouns-only but not perfect (e.g. vague nouns like "thing"/"stuff"

@@ -98,6 +98,40 @@ MIN_REPEAT_COUNT = 3
 MIN_REPEAT_DAYS = 3
 SPREAD_HALF_DAYS = 5
 
+# ---------------------------------------------------------------------------
+# Chains
+# ---------------------------------------------------------------------------
+# A "chain" is a message (or a cycle of messages) that repeats back to back:
+#   Hi / Hi / Hi                    -> cycle of 1, repeated 3x
+#   Hi / Hey / Hi / Hey / Hi / Hey  -> cycle of 2, repeated 3x
+# Matching ignores case and punctuation and tolerates a 1-character typo.
+# A single unrelated message in the middle of a chain does NOT break it
+# (CHAIN_TOLERANCE = 1); two unrelated messages in a row do. Media/deleted/
+# call placeholders match nothing, so they count as such an interruption.
+#   CHAIN_MAX_CYCLE:        longest repeating cycle (in messages) to look for.
+#   CHAIN_MIN_LENGTH:       minimum chain length in messages (interruptions
+#                           not counted).
+#   CHAIN_TOLERANCE:        how many unrelated messages in a row may sit between
+#                           two chain messages before the chain counts as
+#                           broken (0 = no leniency).
+#   CHAIN_MIN_PARTICIPANTS: different people needed in a chain.
+#   CHAIN_ALLOW_SOLO_CYCLES: one person alone still counts if they repeat a
+#                           cycle of 2+ messages (one person repeating a
+#                           single message is just spam and never counts).
+#   CHAIN_MIN_FUZZY_LEN:    1-typo tolerance only applies to messages at least
+#                           this long, so "hi" doesn't match "ho".
+#   CHAIN_TOP_N:            chains shown per report section.
+#   CHAIN_MAX_SHOWN_MESSAGES: messages listed per chain in the expandable
+#                           "full chain" view (the length itself is never capped).
+CHAIN_MAX_CYCLE = 8
+CHAIN_MIN_LENGTH = 3
+CHAIN_TOLERANCE = 1
+CHAIN_MIN_PARTICIPANTS = 2
+CHAIN_ALLOW_SOLO_CYCLES = True
+CHAIN_MIN_FUZZY_LEN = 4
+CHAIN_TOP_N = 10
+CHAIN_MAX_SHOWN_MESSAGES = 40
+
 # How many rows to show in each overall "top N" leaderboard (most repeated
 # words / most repeated phrases).
 TOP_N = 15

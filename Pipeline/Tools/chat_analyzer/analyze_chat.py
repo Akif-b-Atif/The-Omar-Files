@@ -60,6 +60,7 @@ from stats_engine import (
     compute_arc_signature_stats, prepare_lexical_text,
 )
 import chat_config as cfg
+from chains import compute_chain_stats
 import chart_builder as cb
 from html_report import build_html, SECTION_ORDER as HTML_SECTION_ORDER
 from pdf_report import build_pdf
@@ -198,10 +199,13 @@ def compute_bundle(df, participants, cfg_profile, log_label="", aliases=None):
         df, participants, individual_stats, cfg=cfg_profile, aliases=aliases
     )
 
+    log(f"{prefix}Finding chains ...")
+    chainstats = compute_chain_stats(df, cfg_profile)
+
     return {
         "overall": overall, "timedist": timedist, "individual_stats": individual_stats,
         "mention_pairs": mention_pairs, "lb": lb, "wordstats": wordstats,
-        "phrasestats": phrasestats, "participants": participants,
+        "phrasestats": phrasestats, "chainstats": chainstats, "participants": participants,
     }
 
 
@@ -484,6 +488,7 @@ def main():
             bundle["overall"], bundle["timedist"], bundle["individual_stats"], bundle["lb"],
             bundle["wordstats"], bundle["phrasestats"], bundle["mention_pairs"], chart_paths,
             bundle["participants"], os.path.join(args.outdir, f"{out_base}.html"),
+            chainstats=bundle["chainstats"],
             sections=sections, last_period=last_period, arc_periods=arc_periods, cfg_profile=cfg_profile,
         )
         log("Writing search data JSON (needed by the HTML report's Explorer tab) ...")
@@ -498,7 +503,7 @@ def main():
             bundle["overall"], bundle["individual_stats"], bundle["lb"], bundle["wordstats"],
             bundle["phrasestats"], bundle["mention_pairs"], chart_paths, bundle["participants"],
             os.path.join(args.outdir, f"{out_base}.pdf"),
-            sections=sections, last_period=last_period, arc_periods=arc_periods, cfg_profile=cfg_profile,
+            chainstats=bundle["chainstats"], sections=sections, last_period=last_period, arc_periods=arc_periods, cfg_profile=cfg_profile,
         )
 
     elapsed = time.time() - t_start

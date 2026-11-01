@@ -109,13 +109,13 @@ python3 analyze_chat.py --pdf-only \
     --out-name march_alice_bob
 
 # Full HTML+PDF+JSON, but skip the "last N days" section entirely
-python3 analyze_chat.py --sections overview,timing,leaderboards,individuals,words,mentions,funfacts,arcs
+python3 analyze_chat.py --sections overview,timing,leaderboards,individuals,words,chains,mentions,funfacts,arcs
 
 # Change the "last N days" window from 30 to 60
 python3 analyze_chat.py --last-period-days 60
 
 # Skip the "Arcs & Mini-arcs" section (e.g. arc_analyzer.py hasn't been run yet)
-python3 analyze_chat.py --sections overview,timing,leaderboards,individuals,words,mentions,funfacts,lastperiod
+python3 analyze_chat.py --sections overview,timing,leaderboards,individuals,words,chains,mentions,funfacts,lastperiod
 ```
 
 | Flag | What it does |
@@ -138,7 +138,7 @@ python3 analyze_chat.py --sections overview,timing,leaderboards,individuals,word
 | `--arc-report PATH` | Path to `arc_report.txt` (default: `Reports/` in the data directory), re-read fresh on every run so a hand-edited name/description shows up even without re-running `arc_analyzer.py` first. |
 
 Valid `--sections` values: `overview`, `timing`, `leaderboards`,
-`individuals`, `words`, `mentions`, `funfacts`, `lastperiod`, `arcs`, or
+`individuals`, `words`, `chains`, `mentions`, `funfacts`, `lastperiod`, `arcs`, or
 `all` (default). The threshold-override flags (`--min-word-length` etc)
 only affect the **words/phrases** computation (most-repeated +
 signature words/phrases) — they're the same knobs as the matching
@@ -209,6 +209,32 @@ edited counts, plus the top-3 "fun facts" lists described below.
 
 **Timing:** messages per day (full timeline + 7-day rolling average),
 by hour of day, by weekday, weekday×hour heatmap, by month.
+
+**Chains:** the longest runs where a message (or a cycle of messages)
+repeats back to back — `Hi / Hi / Hi` is a cycle of 1 repeated 3 times,
+`Hi / Hey / Hi / Hey / Hi / Hey` a cycle of 2 repeated 3 times. Matching
+ignores case and punctuation and tolerates a one-character typo
+(substitution, insertion, deletion, or swapped neighbours; only on messages
+of `CHAIN_MIN_FUZZY_LEN`+ letters, so "hi" never matches "ho"). Every
+message is compared to the *original* pattern, never to its neighbour, so a
+chain can't drift away from its start one typo at a time.
+
+A single unrelated message in the middle of a chain does **not** break it;
+`CHAIN_TOLERANCE` (default 1) unrelated messages in a row are allowed, one
+more ends the chain (0 = no leniency). Media, deleted messages and calls
+match nothing, so they count as such interruptions; system lines are
+skipped entirely. Interruptions are listed per chain and aren't counted in
+its length. A chain needs at least two full cycles and
+`CHAIN_MIN_LENGTH` members and `CHAIN_MIN_PARTICIPANTS` people, except that
+one person alone still counts if they repeat a cycle of 2+ messages (one
+person repeating a single message is spam, not a chain). Chains never
+overlap (`Hi` x10 isn't also reported as a 2-cycle).
+
+Rendered as its own "Chains" section — cycle, repetitions, who, when, how
+long, interruptions, plus the whole chain (interruptions dimmed and marked
+`~`) in an expandable list in the HTML — in the main report, the
+last-N-days part and every arc. Everything is tunable via `CHAIN_*` in
+`chat_config.py`; the logic lives in `chains.py`.
 
 **Per person:** message count & share, vocabulary size, avg
 words/message, longest message, swear/laugh/question rate, shouting

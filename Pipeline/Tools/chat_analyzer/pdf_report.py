@@ -20,6 +20,7 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
 import chat_config as cfg
+from chains import format_duration
 
 
 def _pesc(s):
@@ -430,6 +431,61 @@ def _words_block(wordstats, phrasestats, cfg_profile=cfg):
     return flow
 
 
+def _chains_block(chainstats):
+    """The longest back-to-back repeating chains (see chains.py): a heading,
+    a one-line summary, and the repeating pattern for each. The full message
+    list per chain is HTML-only (expandable there); here it'd run to pages."""
+    chains = (chainstats or {}).get("chains", [])
+    flow = [Paragraph("The longest chains", styles["SectionHead"]), _hr()]
+    if not chains:
+        flow.append(Paragraph("No chains found: nothing was repeated back to back by enough people.",
+                               styles["Lede"]))
+        flow.append(PageBreak())
+        return flow
+    flow.append(Paragraph(
+        "A chain is a message (or a cycle of messages) repeated back to back, like Hi / Hi / Hi, or "
+        "Hi / Hey / Hi / Hey / Hi / Hey. Case, punctuation and one-letter typos are ignored. A single "
+        "unrelated message (or a media/deleted one) in the middle doesn't break a chain; two in a row do, "
+        "and a chain's length doesn't count those interruptions. "
+        f"{chainstats['total_found']:,} chain(s) found; "
+        f"the longest {len(chains)} are shown.", styles["Lede"]))
+
+    for rank, c in enumerate(chains, start=1):
+        cycle = "1 message" if c["cycle_length"] == 1 else f'{c["cycle_length"]} messages'
+        who = ", ".join(f'{p["name"]} ({p["count"]})' for p in c["participants"])
+        rows = [[Paragraph(_emoji_aware(m["sender"]), styles["Body9"]),
+                 Paragraph(_emoji_aware(_clip(m["text"])), styles["Body9"])] for m in c["pattern"]]
+        t = Table([["Who", "Repeating pattern"]] + rows, colWidths=[1.3 * inch, 5.9 * inch])
+        t.setStyle(TableStyle([
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 7.6),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("BACKGROUND", (0, 0), (-1, 0), INK),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F7F3E9")]),
+            ("GRID", (0, 0), (-1, -1), 0.4, LINE),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ]))
+        flow.append(KeepTogether([
+            Paragraph(f"#{rank} — {c['length']} messages", styles["Eyebrow"]),
+            Paragraph(
+                f"{c['start'][:16].replace('T', ' ')} → {c['end'][:16].replace('T', ' ')} "
+                f"({format_duration(c['duration_seconds'])}) · cycle of {cycle}, "
+                f"repeated {c['repetitions']:g}× · {_emoji_aware(who)} · "
+                + (f"{c['interruptions']['count']} interruption(s) tolerated"
+                   if c["interruptions"]["count"] else "no interruptions"), styles["Body9"]),
+            Spacer(1, 3), t, Spacer(1, 10),
+        ]))
+    flow.append(PageBreak())
+    return flow
+
+
+def _clip(text, limit=200):
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[:limit - 1] + "…"
+
+
 def _mentions_block(chart_paths):
     return [
         Paragraph("Who tags whom", styles["SectionHead"]), _hr(),
@@ -467,15 +523,17 @@ def _funfacts_block(overall, chart_paths):
     return flow
 
 
-SECTION_ORDER = ["overview", "timing", "leaderboards", "individuals", "words", "mentions", "funfacts"]
+SECTION_ORDER = ["overview", "timing", "leaderboards", "individuals", "words", "chains", "mentions", "funfacts"]
 SECTION_TITLES = {
     "overview": "Overview", "timing": "Timing", "leaderboards": "Leaderboards",
-    "individuals": "Individuals", "words": "Words & phrases", "mentions": "Mentions",
+    "individuals": "Individuals", "words": "Words & phrases", "chains": "Chains",
+    "mentions": "Mentions",
     "funfacts": "Fun facts",
 }
 
 
-def _section_blocks(overall, individual_stats, lb, wordstats, phrasestats, chart_paths, cfg_profile=cfg):
+def _section_blocks(overall, individual_stats, lb, wordstats, phrasestats, chart_paths,
+                    cfg_profile=cfg, chainstats=None):
     """Maps each section name to a zero-arg callable returning its
     flowables, bound to the given data. Shared between the main report and
     the "last N days" part so both use identical rendering logic."""
@@ -485,6 +543,7 @@ def _section_blocks(overall, individual_stats, lb, wordstats, phrasestats, chart
         "leaderboards": lambda: _leaderboards_block(lb, chart_paths, individual_stats),
         "individuals": lambda: _individuals_block(chart_paths, individual_stats),
         "words": lambda: _words_block(wordstats, phrasestats, cfg_profile),
+        "chains": lambda: _chains_block(chainstats),
         "mentions": lambda: _mentions_block(chart_paths),
         "funfacts": lambda: _funfacts_block(overall, chart_paths),
     }
@@ -492,7 +551,7 @@ def _section_blocks(overall, individual_stats, lb, wordstats, phrasestats, chart
 
 def build_pdf(overall, individual_stats, lb, wordstats, phrasestats, mention_pairs,
               chart_paths, participants, out_path, sections=None, last_period=None,
-              arc_periods=None, cfg_profile=cfg):
+              arc_periods=None, cfg_profile=cfg, chainstats=None):
     """sections: optional iterable restricting which of SECTION_ORDER (plus
     "lastperiod" and "arcs") get rendered — defaults to everything.
     last_period: optional dict {"days", "bundle", "charts", "cfg"} — pass
@@ -503,9 +562,10 @@ def build_pdf(overall, individual_stats, lb, wordstats, phrasestats, mention_pai
     `sections`) to skip that part entirely. cfg_profile: the (possibly
     CLI-overridden) namespace wordstats/phrasestats were actually computed
     with, so the descriptive text in the words section quotes the right
-    thresholds."""
+    thresholds. chainstats: chains.compute_chain_stats() output; omit it
+    (None) and the Chains section is skipped."""
     sections = set(s.lower() for s in sections) if sections is not None else set(SECTION_ORDER) | {"lastperiod", "arcs"}
-    active = [s for s in SECTION_ORDER if s in sections]
+    active = [s for s in SECTION_ORDER if s in sections and (s != "chains" or chainstats is not None)]
     show_lastperiod = "lastperiod" in sections and last_period and last_period.get("bundle")
     show_arcs = "arcs" in sections and bool(arc_periods)
 
@@ -517,7 +577,7 @@ def build_pdf(overall, individual_stats, lb, wordstats, phrasestats, mention_pai
     # ---- cover ----
     story.extend(_cover_flowables(overall, participants))
     blocks = _section_blocks(overall, individual_stats, lb, wordstats, phrasestats, chart_paths,
-                              cfg_profile=cfg_profile)
+                              cfg_profile=cfg_profile, chainstats=chainstats)
     for s in active:
         story.extend(blocks[s]())
 
@@ -538,7 +598,7 @@ def build_pdf(overall, individual_stats, lb, wordstats, phrasestats, mention_pai
         story.append(PageBreak())
         lp_blocks = _section_blocks(lp["overall"], lp["individual_stats"], lp["lb"],
                                      lp["wordstats"], lp["phrasestats"], last_period["charts"],
-                                     cfg_profile=lp_cfg)
+                                     cfg_profile=lp_cfg, chainstats=lp["chainstats"])
         # every section shown for the last-period part, regardless of which
         # top-level `sections` were chosen for the main report — it's a
         # compact self-contained recap
@@ -572,7 +632,7 @@ def build_pdf(overall, individual_stats, lb, wordstats, phrasestats, mention_pai
                 story.append(Paragraph(period["description"], styles["Lede"]))
             arc_blocks = _section_blocks(arc["overall"], arc["individual_stats"], arc["lb"],
                                           arc["wordstats"], arc["phrasestats"], period["charts"],
-                                          cfg_profile=arc_cfg)
+                                          cfg_profile=arc_cfg, chainstats=arc["chainstats"])
             for s in SECTION_ORDER:
                 story.extend(arc_blocks[s]())
             if i < len(arc_periods):

@@ -7,6 +7,7 @@ import base64
 import html as htmlmod
 
 import chat_config as cfg
+from chains import format_duration
 
 
 def img_b64(path):
@@ -365,6 +366,80 @@ def render_words_phrases(wordstats, phrasestats, cfg_profile=cfg):
 """
 
 
+def render_chains(chainstats):
+    """The longest back-to-back repeating chains (see chains.py): one card per
+    chain with who/when/how long, the repeating pattern, and the whole chain
+    in an expandable list."""
+    chains = (chainstats or {}).get("chains", [])
+    if not chains:
+        return f"""
+<section id="chains">
+  {divider("Chains")}
+  <h2>Chains</h2>
+  <p class="lede">No chains found: nothing was repeated back to back by enough people.</p>
+</section>
+"""
+
+    def chain_card(rank, c):
+        who = " ".join(f'<span class="badge">{esc(p["name"])} · {p["count"]}</span>'
+                       for p in c["participants"])
+        pattern = "".join(
+            f'<li><b>{esc(m["sender"])}</b>: {esc(_clip(m["text"]))}</li>' for m in c["pattern"])
+        rows = "".join(_chain_message_row(m) for m in c["messages"])
+        more = (f'<p class="lede">Showing the first {len(c["messages"])} of {c["span"]} messages.</p>'
+                if c["messages_truncated"] else "")
+        n_int = c["interruptions"]["count"]
+        interruptions = (
+            f'{n_int} unrelated message(s) tolerated inside the chain ('
+            + ", ".join(f'{esc(p["name"])} ({p["count"]})' for p in c["interruptions"]["by"]) + ")"
+            if n_int else "no interruptions")
+        cycle = ("1 message" if c["cycle_length"] == 1 else f'{c["cycle_length"]} messages')
+        return f"""
+      <div class="card">
+        <h3 style="margin-top:0">#{rank} — {c['length']} messages</h3>
+        <p class="lede" style="margin-top:0">{esc(c['start'][:16].replace('T', ' '))} →
+        {esc(c['end'][:16].replace('T', ' '))} ({esc(format_duration(c['duration_seconds']))}) ·
+        cycle of {cycle}, repeated {c['repetitions']:g}×</p>
+        <p>{who}</p>
+        <p class="lede" style="margin-top:0">Interruptions: {interruptions}</p>
+        <p style="margin-bottom:4px"><b>Repeating pattern</b></p>
+        <ol style="margin-top:0">{pattern}</ol>
+        <details><summary>Show the chain (~ marks an interrupting message)</summary>
+          <table><thead><tr><th>When</th><th>Who</th><th>Message</th></tr></thead>
+          <tbody>{rows}</tbody></table>{more}
+        </details>
+      </div>"""
+
+    cards = "".join(chain_card(i, c) for i, c in enumerate(chains, start=1))
+    return f"""
+<section id="chains">
+  {divider("Chains")}
+  <h2>The longest chains</h2>
+  <p class="lede">A chain is a message (or a cycle of messages) repeated back to back, like
+  Hi / Hi / Hi, or Hi / Hey / Hi / Hey / Hi / Hey. Case, punctuation and one-letter typos are ignored.
+  A single unrelated message (or a media/deleted one) in the middle doesn't break a chain; two in a
+  row do. A chain's length doesn't count those interruptions.
+  {chainstats['total_found']:,} chain(s) found; the longest {len(chains)} are shown.</p>
+  <div class="grid grid-2">{cards}</div>
+</section>
+"""
+
+
+def _chain_message_row(m):
+    """One row of a chain's expandable list; interrupting messages (not part
+    of the chain) are dimmed and marked with a ~."""
+    style = ' style="opacity:.55"' if m["interruption"] else ""
+    mark = "~ " if m["interruption"] else ""
+    when = esc(m["at"][:16].replace("T", " "))
+    return (f'<tr{style}><td>{when}</td><td>{esc(m["sender"])}</td>'
+            f'<td>{mark}{esc(_clip(m["text"]))}</td></tr>')
+
+
+def _clip(text, limit=200):
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[:limit - 1] + "…"
+
+
 def render_mentions(pairs, charts):
     rows = "".join(
         f'<tr><td>{esc(p["from"])} → {esc(p["to"])}</td><td class="pill-count">{p["count"]}</td></tr>'
@@ -653,6 +728,7 @@ def render_arc_periods_section(arc_periods, colors):
             rescope(render_leaderboards(bundle["lb"], charts, individual_stats), prefix, "leaderboards"),
             rescope(render_individuals(charts, individual_stats, colors), prefix, "individuals"),
             rescope(render_words_phrases(bundle["wordstats"], bundle["phrasestats"], period.get("cfg", cfg)), prefix, "words"),
+            rescope(render_chains(bundle["chainstats"]), prefix, "chains"),
             rescope(render_mentions(bundle["mention_pairs"], charts), prefix, "mentions"),
             rescope(render_funfacts(overall, charts), prefix, "funfacts"),
         ])
@@ -710,6 +786,7 @@ def render_last_period_section(last_period, colors):
         rescope(render_leaderboards(bundle["lb"], charts, individual_stats), "leaderboards"),
         rescope(render_individuals(charts, individual_stats, colors), "individuals"),
         rescope(render_words_phrases(bundle["wordstats"], bundle["phrasestats"], last_period.get("cfg", cfg)), "words"),
+        rescope(render_chains(bundle["chainstats"]), "chains"),
         rescope(render_mentions(bundle["mention_pairs"], charts), "mentions"),
         rescope(render_funfacts(overall, charts), "funfacts"),
     ])
@@ -731,18 +808,21 @@ def render_last_period_section(last_period, colors):
 """
 
 
-SECTION_ORDER = ["overview", "timing", "leaderboards", "individuals", "words", "mentions", "funfacts"]
+SECTION_ORDER = ["overview", "timing", "leaderboards", "individuals", "words", "chains", "mentions", "funfacts"]
 SECTION_LABELS = {
     "overview": "Overview", "timing": "Timing", "leaderboards": "Leaderboards",
-    "individuals": "Individuals", "words": "Words &amp; Phrases", "mentions": "Mentions",
+    "individuals": "Individuals", "words": "Words &amp; Phrases", "chains": "Chains",
+    "mentions": "Mentions",
     "funfacts": "Fun facts",
 }
 
 
 def build_html(overall, timedist, individual_stats, lb, wordstats, phrasestats,
                 mention_pairs, chart_paths, participants, out_path,
-                sections=None, last_period=None, arc_periods=None, cfg_profile=cfg):
-    """sections: optional iterable restricting which of SECTION_ORDER (plus
+                sections=None, last_period=None, arc_periods=None, cfg_profile=cfg,
+                chainstats=None):
+    """chainstats: chains.compute_chain_stats() output; omit it (None) and
+    the Chains section is skipped. sections: optional iterable restricting which of SECTION_ORDER (plus
     "lastperiod" and "arcs") get rendered — defaults to everything. The
     Explorer tab is always included since it's a standalone interactive
     tool, not tied to any one static section. last_period: optional dict,
@@ -756,7 +836,7 @@ def build_html(overall, timedist, individual_stats, lb, wordstats, phrasestats,
     sections = set(s.lower() for s in sections) if sections is not None else set(SECTION_ORDER) | {"lastperiod", "arcs"}
     charts = {name: img_b64(path) for name, path in chart_paths.items()}
 
-    active = [s for s in SECTION_ORDER if s in sections]
+    active = [s for s in SECTION_ORDER if s in sections and (s != "chains" or chainstats is not None)]
     nav_links = "".join(f'<a href="#{s}">{SECTION_LABELS[s]}</a>' for s in active)
     show_lastperiod = "lastperiod" in sections and last_period and last_period.get("bundle")
     if show_lastperiod:
@@ -788,6 +868,7 @@ def build_html(overall, timedist, individual_stats, lb, wordstats, phrasestats,
         "leaderboards": lambda: render_leaderboards(lb, charts, individual_stats),
         "individuals": lambda: render_individuals(charts, individual_stats, colors),
         "words": lambda: render_words_phrases(wordstats, phrasestats, cfg_profile),
+        "chains": lambda: render_chains(chainstats),
         "mentions": lambda: render_mentions(mention_pairs, charts),
         "funfacts": lambda: render_funfacts(overall, charts),
     }

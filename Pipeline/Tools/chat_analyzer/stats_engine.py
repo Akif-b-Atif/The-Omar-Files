@@ -464,7 +464,7 @@ def _baseline_word_freq():
 
 
 def _comparative_rank(target_counter, target_total, baseline_counter, baseline_total,
-                       eligible_words, top_n, smoothing=1.0):
+                       eligible_words, top_n, smoothing=1.0, weights=None):
     """Ranks `eligible_words` by how much MORE OFTEN they occur in the
     target text than in the baseline text (rate in target / rate in
     baseline), instead of by raw count. This is what turns "most repeated"
@@ -475,8 +475,14 @@ def _comparative_rank(target_counter, target_total, baseline_counter, baseline_t
     Laplace/add-one smoothing on the baseline side keeps a word that's
     simply absent from the baseline from getting an undefined/infinite
     score, and keeps baseline rarities from swinging wildly.
-    Returns a list of (word, target_count, score) tuples, highest score
-    first, truncated to top_n."""
+    `weights` (optional {word: 0..1}) is the spread layer on top of that
+    (see _spread_weight): each word's score is multiplied by its weight
+    when SORTING, so a word that's frequent but only ever said on one day
+    sinks below one that's said less often across many days. The returned
+    score stays the raw, unweighted rate ratio, since that's what the
+    "vs. typical chat" column means.
+    Returns a list of (word, target_count, raw_score) tuples, best
+    (weighted) first, truncated to top_n."""
     baseline_vocab = len(baseline_counter) or 1
     scored = []
     for w in eligible_words:
@@ -485,8 +491,85 @@ def _comparative_rank(target_counter, target_total, baseline_counter, baseline_t
         baseline_rate = (baseline_counter.get(w, 0) + smoothing) / (baseline_total + smoothing * baseline_vocab)
         score = target_rate / baseline_rate if baseline_rate else 0
         scored.append((w, c, score))
-    scored.sort(key=lambda x: (-x[2], -x[1]))
+    weight_of = (lambda w: weights.get(w, 1.0)) if weights else (lambda w: 1.0)
+    scored.sort(key=lambda x: (-x[2] * weight_of(x[0]), -x[1]))
     return scored[:top_n]
+
+
+# ------------------------------------------------------ spread (per-day) --
+#
+# Raw counts alone let one burst of spam ("lol lol lol" x7 in a minute, once,
+# two years ago) look like a trademark. So on top of the usual count and
+# relative-frequency logic, every word/phrase also tracks the DISTINCT DAYS
+# it was said on, per person and overall: saying something ten times in one
+# day is one entry that day. The total count is still tracked and shown; the
+# day entries decide (1) whether something is eligible at all
+# (MIN_REPEAT_DAYS) and (2) how much a score is trusted (_spread_weight).
+
+def _new_day_index():
+    """(overall, per-person) empty {term: set of dates} containers."""
+    return defaultdict(set), defaultdict(lambda: defaultdict(set))
+
+
+def _spread_settings(df, cfg):
+    """(min_days, half_days) for this slice of the chat: cfg.MIN_REPEAT_DAYS
+    and cfg.SPREAD_HALF_DAYS, scaled down for slices too short to ever meet
+    them (an arc that only spans two days can't require three distinct
+    days)."""
+    real = df[(~df["is_system"]) & df["is_real_text"]]
+    window_days = max(1, real["date"].nunique())
+    return (min(cfg.MIN_REPEAT_DAYS, window_days),
+            min(cfg.SPREAD_HALF_DAYS, max(1.0, window_days / 4)))
+
+
+def _spread_weight(n_days, half_days):
+    """0..1 trust multiplier for something said on `n_days` distinct days:
+    0.5 at half_days, ->1 as the days pile up, small for a one-day burst."""
+    return n_days / (n_days + half_days) if n_days > 0 else 0.0
+
+
+def _top_sayer(participants, idx, key):
+    """Who says `key` the most: by distinct days first (so a spammer can't
+    beat someone who says it steadily), raw count as the tiebreak."""
+    per_person, per_person_days = idx["per_person"], idx["per_person_days"]
+    return max(participants, key=lambda p: (
+        len(per_person_days.get(p, {}).get(key, ())),
+        per_person.get(p, {}).get(key, 0),
+    ))
+
+
+def _signature_candidates(keys, idx, participants, field, display, min_days, half_days, cfg):
+    """One entry per word/phrase in `keys` that somebody 'owns': the person
+    with the most distinct days saying it (min_days and MIN_REPEAT_COUNT
+    both required of THEM, not just of the chat overall). dominance_pct is
+    that person's share of all (person, day) entries, so it can't be
+    inflated by spamming; rank_score = dominance x spread weight is what the
+    per-person lists are ordered by. Shared by compute_word_stats and
+    compute_phrase_stats."""
+    per_person, per_person_days = idx["per_person"], idx["per_person_days"]
+    out = []
+    for key in keys:
+        day_entries = {p: len(per_person_days.get(p, {}).get(key, ())) for p in participants}
+        best = max(participants, key=lambda p: (day_entries[p], per_person.get(p, {}).get(key, 0)),
+                   default=None)
+        if best is None:
+            continue
+        best_days, best_count = day_entries[best], per_person.get(best, {}).get(key, 0)
+        if best_days < min_days or best_count < cfg.MIN_REPEAT_COUNT:
+            continue
+        total_days = sum(len(d.get(key, ())) for d in per_person_days.values())
+        dominance = 100 * best_days / total_days
+        weight = _spread_weight(best_days, half_days)
+        out.append({
+            field: display(key), "person": best,
+            "person_count": best_count, "total_count": idx["counter"][key],
+            "person_days": best_days, "total_days": total_days,
+            "dominance_pct": round(dominance, 1),
+            "spread_weight": round(weight, 2), "rank_score": round(dominance * weight, 2),
+            "first_instance": {"by": idx["first_seen_by"][key], "at": _iso(idx["first_seen"][key])},
+            "last_instance": {"by": idx["last_seen_by"][key], "at": _iso(idx["last_seen"][key])},
+        })
+    return out
 
 
 def _build_word_index(df, cfg, apply_stopwords=True, mention_pattern=None):
@@ -498,11 +581,13 @@ def _build_word_index(df, cfg, apply_stopwords=True, mention_pattern=None):
     real = df[(~df["is_system"]) & df["is_real_text"]]
     global_counter = Counter()
     per_person_counter = defaultdict(Counter)
+    days, per_person_days = _new_day_index()
     first_seen, last_seen = {}, {}
     first_seen_by, last_seen_by = {}, {}
 
     text_column = "analysis_text" if "analysis_text" in real else "text"
-    for sender, text, ts in zip(real["sender"], real[text_column], real["timestamp"]):
+    for sender, text, ts, day in zip(real["sender"], real[text_column],
+                                     real["timestamp"], real["date"]):
         toks = [t for t in tokenize(_clean_for_wordphrase(text, mention_pattern))
                 if len(t) >= cfg.MIN_WORD_LENGTH]
         if apply_stopwords:
@@ -510,6 +595,8 @@ def _build_word_index(df, cfg, apply_stopwords=True, mention_pattern=None):
         for t in toks:
             global_counter[t] += 1
             per_person_counter[sender][t] += 1
+            days[t].add(day)
+            per_person_days[sender][t].add(day)
             if t not in first_seen or ts < first_seen[t]:
                 first_seen[t] = ts
                 first_seen_by[t] = sender
@@ -519,6 +606,7 @@ def _build_word_index(df, cfg, apply_stopwords=True, mention_pattern=None):
 
     return {
         "counter": global_counter, "per_person": per_person_counter,
+        "days": days, "per_person_days": per_person_days,
         "first_seen": first_seen, "last_seen": last_seen,
         "first_seen_by": first_seen_by, "last_seen_by": last_seen_by,
     }
@@ -531,17 +619,21 @@ def _build_phrase_index(df, cfg, mention_pattern=None):
     real = df[(~df["is_system"]) & df["is_real_text"]]
     global_counter = Counter()
     per_person_counter = defaultdict(Counter)
+    days, per_person_days = _new_day_index()
     first_seen, last_seen = {}, {}
     first_seen_by, last_seen_by = {}, {}
     display_text = {}
 
     text_column = "analysis_text" if "analysis_text" in real else "text"
-    for sender, text, ts in zip(real["sender"], real[text_column], real["timestamp"]):
+    for sender, text, ts, day in zip(real["sender"], real[text_column],
+                                     real["timestamp"], real["date"]):
         norm = _normalize_message(_clean_for_wordphrase(text, mention_pattern))
         if len(norm) < cfg.MIN_PHRASE_LENGTH:
             continue
         global_counter[norm] += 1
         per_person_counter[sender][norm] += 1
+        days[norm].add(day)
+        per_person_days[sender][norm].add(day)
         if norm not in first_seen or ts < first_seen[norm]:
             first_seen[norm] = ts
             first_seen_by[norm] = sender
@@ -555,6 +647,7 @@ def _build_phrase_index(df, cfg, mention_pattern=None):
 
     return {
         "counter": global_counter, "per_person": per_person_counter,
+        "days": days, "per_person_days": per_person_days,
         "first_seen": first_seen, "last_seen": last_seen,
         "first_seen_by": first_seen_by, "last_seen_by": last_seen_by,
         "display": display_text,
@@ -594,7 +687,7 @@ def _group_signature_by_person(signature_all, participants, individual_stats,
         if individual_stats is not None:
             if individual_stats.get(p, {}).get("total_messages", 0) < min_messages:
                 continue
-        items = sorted(grouped.get(p, []), key=lambda x: (-x["dominance_pct"], -x["person_count"]))[:top_n]
+        items = sorted(grouped.get(p, []), key=lambda x: (-x.get("rank_score", x["dominance_pct"]), -x["person_count"]))[:top_n]
         if items:
             result[p] = items
     return result
@@ -608,11 +701,15 @@ def compute_word_stats(df, participants, individual_stats=None, cfg=cfg,
     if mention_pattern is None:
         mention_pattern, _ = _compile_mention_patterns(participants, aliases)
     idx = _build_word_index(df, cfg, apply_stopwords=True, mention_pattern=mention_pattern)
-    global_counter, per_person_counter = idx["counter"], idx["per_person"]
+    global_counter, days = idx["counter"], idx["days"]
     first_seen, last_seen = idx["first_seen"], idx["last_seen"]
     first_seen_by, last_seen_by = idx["first_seen_by"], idx["last_seen_by"]
+    min_days, half_days = _spread_settings(df, cfg)
 
-    eligible = {w: c for w, c in global_counter.items() if c >= cfg.MIN_REPEAT_COUNT}
+    # Eligible = said enough times AND on enough distinct days.
+    eligible = {w: c for w, c in global_counter.items()
+                if c >= cfg.MIN_REPEAT_COUNT and len(days[w]) >= min_days}
+    spread = {w: _spread_weight(len(days[w]), half_days) for w in eligible}
 
     # "Most repeated words" used to just be `eligible` sorted by raw count.
     # But once pronouns/verbs/prepositions/names are filtered out via
@@ -622,41 +719,29 @@ def compute_word_stats(df, participants, individual_stats=None, cfg=cfg,
     # this chat says each word than a synthetic, completely generic
     # baseline group chat does (baseline_corpus.py) — that surfaces this
     # chat's actual topical/signature vocabulary instead of universal
-    # filler.
+    # filler. That score is then multiplied by the word's spread weight, so
+    # a one-day burst doesn't outrank a word said steadily over months.
     baseline_counter, baseline_total = _baseline_word_freq()
     target_total = sum(global_counter.values())
     ranked = _comparative_rank(global_counter, target_total, baseline_counter,
-                                baseline_total, eligible.keys(), cfg.TOP_N)
+                                baseline_total, eligible.keys(), cfg.TOP_N, weights=spread)
 
     top_words = []
     for w, c, score in ranked:
-        top_sender = max(participants, key=lambda p: per_person_counter[p].get(w, 0))
+        top_sender = _top_sayer(participants, idx, w)
         top_words.append({
-            "word": w, "count": c, "vs_baseline": round(score, 1),
-            "top_sayer": top_sender, "top_sayer_count": per_person_counter[top_sender].get(w, 0),
+            "word": w, "count": c, "days": len(days[w]), "vs_baseline": round(score, 1),
+            "top_sayer": top_sender, "top_sayer_count": idx["per_person"][top_sender].get(w, 0),
             "first_instance": {"by": first_seen_by[w], "at": _iso(first_seen[w])},
             "last_instance": {"by": last_seen_by[w], "at": _iso(last_seen[w])},
         })
 
-    # signature words: for every word, whoever says it most "owns" it.
-    # Grouped per person below instead of one global top-N list, so every
-    # active member (>= SIGNATURE_MIN_MESSAGES messages) gets their own
-    # top-SIGNATURE_TOP_N_PER_PERSON signature words.
-    signature_words_all = []
-    for w, c in eligible.items():
-        best_person, best_count = None, 0
-        for p in participants:
-            pc = per_person_counter[p].get(w, 0)
-            if pc > best_count:
-                best_person, best_count = p, pc
-        if best_count >= cfg.MIN_REPEAT_COUNT:
-            dominance = best_count / c
-            signature_words_all.append({
-                "word": w, "person": best_person, "person_count": best_count,
-                "total_count": c, "dominance_pct": round(100 * dominance, 1),
-                "first_instance": {"by": first_seen_by[w], "at": _iso(first_seen[w])},
-                "last_instance": {"by": last_seen_by[w], "at": _iso(last_seen[w])},
-            })
+    # signature words: for every word, whoever says it on the most distinct
+    # days "owns" it. Grouped per person below instead of one global top-N
+    # list, so every active member (>= SIGNATURE_MIN_MESSAGES messages) gets
+    # their own top-SIGNATURE_TOP_N_PER_PERSON signature words.
+    signature_words_all = _signature_candidates(
+        eligible, idx, participants, "word", lambda w: w, min_days, half_days, cfg)
     signature_words = _group_signature_by_person(
         signature_words_all, participants, individual_stats,
         top_n=cfg.SIGNATURE_TOP_N_PER_PERSON, min_messages=cfg.SIGNATURE_MIN_MESSAGES)
@@ -682,42 +767,35 @@ def compute_phrase_stats(df, participants, individual_stats=None, cfg=cfg,
     if mention_pattern is None:
         mention_pattern, _ = _compile_mention_patterns(participants, aliases)
     idx = _build_phrase_index(df, cfg, mention_pattern=mention_pattern)
-    global_counter, per_person_counter = idx["counter"], idx["per_person"]
+    global_counter, days = idx["counter"], idx["days"]
     first_seen, last_seen = idx["first_seen"], idx["last_seen"]
     first_seen_by, last_seen_by = idx["first_seen_by"], idx["last_seen_by"]
     display_text = idx["display"]  # normalized phrase -> a representative original message, for display
+    min_days, half_days = _spread_settings(df, cfg)
 
-    eligible = {p: c for p, c in global_counter.items() if c >= cfg.MIN_REPEAT_COUNT}
+    eligible = {p: c for p, c in global_counter.items()
+                if c >= cfg.MIN_REPEAT_COUNT and len(days[p]) >= min_days}
 
-    # top phrases: rank by how many times that exact message was sent
-    ranked = sorted(eligible.keys(), key=lambda p: (-eligible[p], -len(p)))[: cfg.TOP_N]
+    # top phrases: rank by how many times that exact message was sent,
+    # discounted by how spread out those sends were (a message sent 7 times
+    # on one day ranks like ~1.2 sends; 7 times on 7 days like ~4).
+    def spread_score(ph):
+        return eligible[ph] * _spread_weight(len(days[ph]), half_days)
+    ranked = sorted(eligible, key=lambda p: (-spread_score(p), -eligible[p], -len(p)))[: cfg.TOP_N]
     top_phrases = []
     for ph in ranked:
-        c = eligible[ph]
-        top_sender = max(participants, key=lambda p: per_person_counter[p].get(ph, 0))
+        top_sender = _top_sayer(participants, idx, ph)
         top_phrases.append({
-            "phrase": display_text.get(ph, ph), "count": c,
-            "top_sayer": top_sender, "top_sayer_count": per_person_counter[top_sender].get(ph, 0),
+            "phrase": display_text.get(ph, ph), "count": eligible[ph], "days": len(days[ph]),
+            "top_sayer": top_sender, "top_sayer_count": idx["per_person"][top_sender].get(ph, 0),
             "first_instance": {"by": first_seen_by[ph], "at": _iso(first_seen[ph])},
             "last_instance": {"by": last_seen_by[ph], "at": _iso(last_seen[ph])},
         })
 
     # signature phrases: same per-person grouping as signature words
-    signature_phrases_all = []
-    for ph, c in eligible.items():
-        best_person, best_count = None, 0
-        for p in participants:
-            pc = per_person_counter[p].get(ph, 0)
-            if pc > best_count:
-                best_person, best_count = p, pc
-        if best_count >= cfg.MIN_REPEAT_COUNT:
-            dominance = best_count / c
-            signature_phrases_all.append({
-                "phrase": display_text.get(ph, ph), "person": best_person, "person_count": best_count,
-                "total_count": c, "dominance_pct": round(100 * dominance, 1),
-                "first_instance": {"by": first_seen_by[ph], "at": _iso(first_seen[ph])},
-                "last_instance": {"by": last_seen_by[ph], "at": _iso(last_seen[ph])},
-            })
+    signature_phrases_all = _signature_candidates(
+        eligible, idx, participants, "phrase", lambda ph: display_text.get(ph, ph),
+        min_days, half_days, cfg)
     signature_phrases = _group_signature_by_person(
         signature_phrases_all, participants, individual_stats,
         top_n=cfg.SIGNATURE_TOP_N_PER_PERSON, min_messages=cfg.SIGNATURE_MIN_MESSAGES)
@@ -757,16 +835,21 @@ def compute_arc_signature_stats(df_arc, df_archive, participants, cfg=cfg, alias
     archive_counter = word_idx_archive["counter"]
     arc_total = sum(arc_counter.values())
     archive_total = sum(archive_counter.values())
+    min_days, half_days = _spread_settings(df_arc, cfg)
 
-    eligible = {w: c for w, c in arc_counter.items() if c >= cfg.MIN_REPEAT_COUNT}
+    arc_days = word_idx_arc["days"]
+    eligible = {w: c for w, c in arc_counter.items()
+                if c >= cfg.MIN_REPEAT_COUNT and len(arc_days[w]) >= min_days}
+    spread = {w: _spread_weight(len(arc_days[w]), half_days) for w in eligible}
     ranked = _comparative_rank(arc_counter, arc_total, archive_counter,
-                                archive_total, eligible.keys(), cfg.TOP_N)
+                                archive_total, eligible.keys(), cfg.TOP_N, weights=spread)
 
     signature_words = []
     for w, c, score in ranked:
-        top_sender = max(participants, key=lambda p: per_person[p].get(w, 0)) if participants else None
+        top_sender = _top_sayer(participants, word_idx_arc, w) if participants else None
         signature_words.append({
-            "word": w, "count_in_arc": c, "count_in_archive": archive_counter.get(w, 0),
+            "word": w, "count_in_arc": c, "days_in_arc": len(arc_days[w]),
+            "count_in_archive": archive_counter.get(w, 0),
             "vs_archive": round(score, 1),
             "top_sayer": top_sender,
             "top_sayer_count": per_person[top_sender].get(w, 0) if top_sender else 0,
@@ -781,16 +864,20 @@ def compute_arc_signature_stats(df_arc, df_archive, participants, cfg=cfg, alias
     arc_ptotal = sum(arc_pcounter.values())
     archive_ptotal = sum(archive_pcounter.values())
 
-    eligible_p = {p: c for p, c in arc_pcounter.items() if c >= cfg.MIN_REPEAT_COUNT}
+    arc_pdays = phrase_idx_arc["days"]
+    eligible_p = {p: c for p, c in arc_pcounter.items()
+                  if c >= cfg.MIN_REPEAT_COUNT and len(arc_pdays[p]) >= min_days}
+    spread_p = {p: _spread_weight(len(arc_pdays[p]), half_days) for p in eligible_p}
     ranked_p = _comparative_rank(arc_pcounter, arc_ptotal, archive_pcounter,
-                                  archive_ptotal, eligible_p.keys(), cfg.TOP_N)
+                                  archive_ptotal, eligible_p.keys(), cfg.TOP_N, weights=spread_p)
 
     signature_phrases = []
     for ph, c, score in ranked_p:
-        top_sender = max(participants, key=lambda p: per_person_p[p].get(ph, 0)) if participants else None
+        top_sender = _top_sayer(participants, phrase_idx_arc, ph) if participants else None
         signature_phrases.append({
             "phrase": phrase_idx_arc["display"].get(ph, ph),
-            "count_in_arc": c, "count_in_archive": archive_pcounter.get(ph, 0),
+            "count_in_arc": c, "days_in_arc": len(arc_pdays[ph]),
+            "count_in_archive": archive_pcounter.get(ph, 0),
             "vs_archive": round(score, 1),
             "top_sayer": top_sender,
             "top_sayer_count": per_person_p[top_sender].get(ph, 0) if top_sender else 0,

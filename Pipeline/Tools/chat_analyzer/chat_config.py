@@ -81,6 +81,23 @@ MIN_PHRASE_LENGTH = 8
 # "most repeated" / "signature" leaderboard (avoids one-off junk entries).
 MIN_REPEAT_COUNT = 3
 
+# Spread across days. Saying something 7 times in one afternoon shouldn't
+# make it your trademark, so on top of the count/relative-frequency logic
+# above, every word/phrase is also tracked by the DISTINCT DAYS it was said
+# on (per person and overall) -- saying it ten times in one day is one entry
+# for that day. The total count is still tracked and shown.
+#   MIN_REPEAT_DAYS:  an item must be said on at least this many different
+#                     days (by the person, for their signature lists) to
+#                     show up at all. Auto-lowered for slices shorter than
+#                     this (e.g. a 2-day arc).
+#   SPREAD_HALF_DAYS: how fast trust grows with days. An item's score is
+#                     multiplied by days / (days + SPREAD_HALF_DAYS): half
+#                     weight at this many days, ~0.9 at 9x this many.
+#                     Higher = punish short bursts harder. Also capped at a
+#                     quarter of the slice's length for short slices.
+MIN_REPEAT_DAYS = 3
+SPREAD_HALF_DAYS = 5
+
 # How many rows to show in each overall "top N" leaderboard (most repeated
 # words / most repeated phrases).
 TOP_N = 15
@@ -121,7 +138,7 @@ SIGNATURE_TOP_N_PER_PERSON = 15
 # slices of the full archive, so they need the same loosened noise
 # thresholds for the same reason. There's no separate ARC_* set of
 # constants; that would just be the same knob duplicated.
-LAST_PERIOD_DAYS = 365
+LAST_PERIOD_DAYS = 91
 LAST_PERIOD_MIN_WORD_LENGTH = 3
 LAST_PERIOD_MIN_PHRASE_LENGTH = 8
 LAST_PERIOD_MIN_REPEAT_COUNT = 2

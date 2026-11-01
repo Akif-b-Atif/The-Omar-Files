@@ -260,7 +260,7 @@ def render_words_phrases(wordstats, phrasestats, cfg_profile=cfg):
             out.append(f"""
             <tr>
               <td><b>{esc(term)}</b></td>
-              <td class="pill-count">{it['count']}</td>
+              <td class="pill-count">{it['count']} <span class="badge">{it['days']}d</span></td>
               {vs_col}
               <td>{esc(it['top_sayer'])} <span class="badge">{it['top_sayer_count']}×</span></td>
               <td>{esc(it['first_instance']['by'])}<br><span class="badge">{it['first_instance']['at'][:10]}</span></td>
@@ -290,12 +290,12 @@ def render_words_phrases(wordstats, phrasestats, cfg_profile=cfg):
                     <tr>
                       <td><b>{esc(term)}</b></td>
                       <td class="pill-count">{it['dominance_pct']}%</td>
-                      <td>{it['person_count']} / {it['total_count']}</td>
+                      <td>{it['person_count']} / {it['total_count']} <span class="badge">{it['person_days']}d</span></td>
                     </tr>""")
                 cards.append(f"""
                 <div class="card">
                   <h4 style="margin:0 0 10px">{esc(person)}</h4>
-                  <table><thead><tr><th>{'Phrase' if is_phrase else 'Word'}</th><th>Dominance</th><th>Theirs / Total</th></tr></thead>
+                  <table><thead><tr><th>{'Phrase' if is_phrase else 'Word'}</th><th>Dominance</th><th>Theirs / Total (their days)</th></tr></thead>
                   <tbody>{''.join(rows)}</tbody></table>
                 </div>""")
             return f'<div class="grid grid-3">{"".join(cards)}</div>'
@@ -333,7 +333,10 @@ def render_words_phrases(wordstats, phrasestats, cfg_profile=cfg):
   <p class="lede">Top {len(wordstats['top_words'])} words ({cfg_profile.MIN_WORD_LENGTH}+ letters, common
   pronouns/verbs/fillers/names filtered out) and phrases ({cfg_profile.MIN_PHRASE_LENGTH}+ letters — a
   "phrase" is a whole message; two messages count as the same phrase if they're identical once emojis,
-  punctuation, and capitalization are ignored), each said at least {cfg_profile.MIN_REPEAT_COUNT} times.
+  punctuation, and capitalization are ignored), each said at least {cfg_profile.MIN_REPEAT_COUNT} times
+  on at least {cfg_profile.MIN_REPEAT_DAYS} different days (the <b>Nd</b> badges — saying something ten times in one
+  day counts as one day, and results are weighted towards things said across many days, so a one-day burst
+  can't pass for a trademark).
   Words are ranked by how much MORE often this chat says them than a synthetic, generic group chat does
   (the "vs. typical chat" column) — not just by raw count — so this surfaces this chat's actual topics
   instead of universal chat filler.</p>

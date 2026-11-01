@@ -167,7 +167,7 @@ def _words_table(items, is_phrase=False):
         row = [
             str(i + 1),
             Paragraph(_emoji_aware(term), styles["Body9"]),
-            str(it["count"]),
+            f'{it["count"]} ({it["days"]}d)',
         ]
         if not is_phrase:
             row.append(f'{it["vs_baseline"]}×')
@@ -177,8 +177,8 @@ def _words_table(items, is_phrase=False):
             it["last_instance"]["at"][:10],
         ])
         rows.append(row)
-    col_widths = ([0.22, 1.55, 0.45, 0.75, 0.8, 0.75, 0.75] if not is_phrase
-                  else [0.22, 1.8, 0.5, 0.95, 0.75, 0.75])
+    col_widths = ([0.22, 1.4, 0.6, 0.75, 0.8, 0.75, 0.75] if not is_phrase
+                  else [0.22, 1.65, 0.65, 0.95, 0.75, 0.75])
     t = Table(header + rows, colWidths=[w * inch for w in col_widths])
     t.setStyle(TableStyle([
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
@@ -217,7 +217,7 @@ def _signature_flowables(grouped, is_phrase=False):
                 term = it.get("phrase") if is_phrase else it.get("word")
                 rows.append([
                     str(i + 1), Paragraph(_emoji_aware(term), styles["Body9"]),
-                    f'{it["dominance_pct"]}%', f'{it["person_count"]}/{it["total_count"]}',
+                    f'{it["dominance_pct"]}%', f'{it["person_count"]}/{it["total_count"]} ({it["person_days"]}d)',
                 ])
             t = Table(header + rows, colWidths=[0.25 * inch, 3.65 * inch, 0.95 * inch, 1.05 * inch])
             t.setStyle(TableStyle([
@@ -401,7 +401,7 @@ def _words_block(wordstats, phrasestats, cfg_profile=cfg):
     flow = [
         Paragraph("Most repeated words", styles["SectionHead"]),
         Paragraph(
-            f"Words with {cfg_profile.MIN_WORD_LENGTH}+ letters, said at least {cfg_profile.MIN_REPEAT_COUNT} times "
+            f"Words with {cfg_profile.MIN_WORD_LENGTH}+ letters, said at least {cfg_profile.MIN_REPEAT_COUNT} times on {cfg_profile.MIN_REPEAT_DAYS}+ different days "
             f"— common pronouns/verbs/fillers/names are filtered out, and words are ranked by how much MORE "
             f"often this chat says them than a synthetic, generic group chat does (\"vs. typical chat\"), not "
             f"just by raw count, so this surfaces this chat's actual topics instead of universal filler.",
@@ -418,7 +418,7 @@ def _words_block(wordstats, phrasestats, cfg_profile=cfg):
     flow.append(Paragraph(
         f"A \"phrase\" here is a whole message ({cfg_profile.MIN_PHRASE_LENGTH}+ letters) — two messages "
         f"count as the same phrase if they're identical once emojis, punctuation, and capitalization "
-        f"are ignored, said at least {cfg_profile.MIN_REPEAT_COUNT} times.",
+        f"are ignored, said at least {cfg_profile.MIN_REPEAT_COUNT} times on {cfg_profile.MIN_REPEAT_DAYS}+ different days.",
         styles["Lede"]))
     flow.append(_words_table(phrasestats["top_phrases"], is_phrase=True))
     flow.append(PageBreak())

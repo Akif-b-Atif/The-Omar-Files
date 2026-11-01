@@ -14,6 +14,8 @@ from stats_engine import (  # noqa: E402
     _compile_mention_patterns,
     _compute_mentions,
     compute_overall,
+    compute_phrase_stats,
+    compute_word_stats,
     prepare_lexical_text,
 )
 import chat_config as cfg  # noqa: E402
@@ -241,3 +243,84 @@ def test_nickname_parts_that_are_ordinary_words_stay_in_word_stats(tmp_path):
     tokens = chat_config._name_tokens_from_identities(ids)
     assert "zephyrine" in tokens and "zeph" in tokens
     assert "big" not in tokens
+
+
+# ---------------------------------------------------------------------------
+# Spread across days
+# ---------------------------------------------------------------------------
+
+def _dated(messages):
+    """messages: (day_offset, sender, text) -> parsed dataframe, one message
+    per entry, all at the same time of day on `day_offset` days after
+    2024-01-01 (kept as real dates so day counting is exercised)."""
+    import datetime as dt
+    base = dt.date(2024, 1, 1)
+    return build_dataframe([
+        {"date_s": (base + dt.timedelta(days=d)).strftime("%d-%b-%Y"),
+         "time_s": f"10:{i % 60:02d}", "sender": sender, "text": text, "is_system": False}
+        for i, (d, sender, text) in enumerate(messages)
+    ])
+
+
+def test_one_day_spam_is_not_a_trademark_phrase():
+    spam = [(0, "Alice", "lets get some dinner")] * 7
+    steady = [(d * 20, "Bob", "good morning everyone") for d in range(4)]
+    filler = [(d, "Alice", f"unrelated chatter number {d}") for d in range(100)]
+    df = _dated(spam + steady + filler)
+    stats = compute_phrase_stats(df, ["Alice", "Bob"])
+    top = {p["phrase"]: p for p in stats["top_phrases"]}
+    assert "lets get some dinner" not in top           # 7 times, but on 1 day
+    assert top["good morning everyone"]["count"] == 4 and top["good morning everyone"]["days"] == 4
+    sig = {p["phrase"] for items in stats["signature_phrases"].values() for p in items}
+    assert "lets get some dinner" not in sig
+
+
+def test_same_day_repeats_count_as_one_entry_but_total_is_kept():
+    # Alice: 3 messages on each of 3 days (9 total, 3 day-entries).
+    msgs = [(d, "Alice", "see you at the usual spot") for d in (0, 10, 20) for _ in range(3)]
+    df = _dated(msgs)
+    stats = compute_phrase_stats(df, ["Alice"])
+    (phrase,) = stats["top_phrases"]
+    assert phrase["count"] == 9 and phrase["days"] == 3
+
+
+def test_spread_beats_a_bigger_burst_in_ranking():
+    burst = [(0, "Alice", "pizza night tonight")] * 6          # 6 sends, 1 day
+    steady = [(d * 10, "Alice", "movie night tonight") for d in range(5)]  # 5 sends, 5 days
+    df = _dated(burst + steady)
+    # MIN_REPEAT_DAYS=1 so the burst is eligible and only the ranking decides
+    profile = cfg.make_profile(MIN_REPEAT_DAYS=1)
+    order = [p["phrase"] for p in compute_phrase_stats(df, ["Alice"], cfg=profile)["top_phrases"]]
+    assert order == ["movie night tonight", "pizza night tonight"]
+
+
+def test_signature_ownership_goes_to_the_steady_sayer_not_the_spammer():
+    spam = [(0, "Alice", "absolutely not happening")] * 10
+    steady = [(d * 15, "Bob", "absolutely not happening") for d in range(4)]
+    df = _dated(spam + steady)
+    profile = cfg.make_profile(SIGNATURE_MIN_MESSAGES=1, MIN_REPEAT_DAYS=3)
+    sig = compute_phrase_stats(df, ["Alice", "Bob"], cfg=profile)["signature_phrases"]
+    assert [p["phrase"] for p in sig.get("Bob", [])] == ["absolutely not happening"]
+    assert not sig.get("Alice")  # 10 messages, but only on 1 day
+
+
+def test_short_slices_scale_the_day_requirement_down():
+    # a 2-day window can never show 3 distinct days
+    df = _dated([(0, "Alice", "arc specific phrase here"), (1, "Alice", "arc specific phrase here"),
+                 (1, "Bob", "arc specific phrase here")])
+    stats = compute_phrase_stats(df, ["Alice", "Bob"])
+    assert [p["phrase"] for p in stats["top_phrases"]] == ["arc specific phrase here"]
+
+
+def test_one_day_word_burst_is_not_a_top_or_signature_word():
+    burst = [(0, "Alice", "zorblax zorblax zorblax")] * 4        # 12 uses, 1 day
+    steady = [(d * 30, "Bob", "quixotic plan") for d in range(4)]  # 4 uses, 4 days
+    filler = [(d, "Alice", f"other words {d}") for d in range(100)]
+    df = _dated(burst + steady + filler)
+    profile = cfg.make_profile(SIGNATURE_MIN_MESSAGES=1)
+    stats = compute_word_stats(df, ["Alice", "Bob"], cfg=profile)
+    top = {w["word"]: w for w in stats["top_words"]}
+    assert "zorblax" not in top
+    assert top["quixotic"]["count"] == 4 and top["quixotic"]["days"] == 4
+    owned_by_alice = {w["word"] for w in stats["signature_words"].get("Alice", [])}
+    assert "zorblax" not in owned_by_alice

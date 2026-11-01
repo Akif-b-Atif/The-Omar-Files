@@ -300,6 +300,32 @@ letter or digit, so `me@123...` isn't one) are treated as possible
 number mentions, so short numbers that happen to follow an `@` (a year, a
 small count) are never misread as one.
 
+## Repeated words/phrases: spread across days
+
+"Most repeated" and per-person "signature" words/phrases are filtered and
+ranked by how many DIFFERENT DAYS something was said on, not just how many
+times, so a burst of spam can't pass for a trademark:
+
+- Every word/phrase tracks the distinct days it was said on, overall and
+  per person. Saying something ten times in one day is one entry that day.
+  The total count is still tracked and shown (the `Nd` badge next to a
+  count is the number of days).
+- **Eligibility:** besides `MIN_REPEAT_COUNT`, it must appear on at least
+  `MIN_REPEAT_DAYS` days (for signature lists: the *owner* must).
+- **Ranking:** the existing logic is untouched (relative frequency vs. a
+  generic chat for words; raw count for phrases; dominance for signature
+  lists) and is then multiplied by `days / (days + SPREAD_HALF_DAYS)`.
+  With the default of 5, one day is worth ~0.17, five days 0.5, thirty
+  days ~0.86.
+- **Ownership:** whoever says it on the most days owns a signature
+  word/phrase (raw count only breaks ties), and `dominance_pct` is their
+  share of all (person, day) entries, so spamming can't buy ownership.
+- Slices shorter than the settings (the "last N days" window, short arcs)
+  scale the day requirements down so they can still produce results.
+
+Both knobs live in `chat_config.py` and can be overridden per run with
+`--min-repeat-days` / `--spread-half-days`.
+
 ## Preserve-everything policy
 
 Nothing is silently dropped, except blank lines *between* messages (a

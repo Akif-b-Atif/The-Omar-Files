@@ -100,6 +100,21 @@ def log(msg):
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
+def loose_profile():
+    """The loosened thresholds (LAST_PERIOD_* in chat_config.py) shared by
+    the "last N days" snapshot and every arc/mini-arc mini-report: both are
+    small slices of the archive, so the full-archive noise filters would
+    remove nearly everything from them."""
+    return cfg.make_profile(
+        MIN_WORD_LENGTH=cfg.LAST_PERIOD_MIN_WORD_LENGTH,
+        MIN_PHRASE_LENGTH=cfg.LAST_PERIOD_MIN_PHRASE_LENGTH,
+        MIN_REPEAT_COUNT=cfg.LAST_PERIOD_MIN_REPEAT_COUNT,
+        TOP_N=cfg.LAST_PERIOD_TOP_N,
+        SIGNATURE_MIN_MESSAGES=cfg.LAST_PERIOD_SIGNATURE_MIN_MESSAGES,
+        SIGNATURE_TOP_N_PER_PERSON=cfg.LAST_PERIOD_SIGNATURE_TOP_N_PER_PERSON,
+    )
+
+
 def _filter_df(df, start=None, end=None, people=None):
     """Restrict the dataframe to a date range and/or a set of senders.
     System messages (joins/leaves/etc) are always kept when filtering by
@@ -282,6 +297,12 @@ Examples:
                          help=f"Override MIN_PHRASE_LENGTH (default {cfg.MIN_PHRASE_LENGTH})")
     thresh.add_argument("--min-repeat-count", type=int, default=None,
                          help=f"Override MIN_REPEAT_COUNT (default {cfg.MIN_REPEAT_COUNT})")
+    thresh.add_argument("--min-repeat-days", type=int, default=None,
+                         help=f"Override MIN_REPEAT_DAYS (default {cfg.MIN_REPEAT_DAYS}): distinct days "
+                              f"something must be said on to be listed")
+    thresh.add_argument("--spread-half-days", type=int, default=None,
+                         help=f"Override SPREAD_HALF_DAYS (default {cfg.SPREAD_HALF_DAYS}): days at which "
+                              f"a word/phrase earns half its full spread weight")
     thresh.add_argument("--top-n", type=int, default=None,
                          help=f"Override TOP_N (default {cfg.TOP_N})")
     thresh.add_argument("--signature-min-messages", type=int, default=None,
@@ -323,6 +344,10 @@ def main():
         overrides["MIN_PHRASE_LENGTH"] = args.min_phrase_length
     if args.min_repeat_count is not None:
         overrides["MIN_REPEAT_COUNT"] = args.min_repeat_count
+    if args.min_repeat_days is not None:
+        overrides["MIN_REPEAT_DAYS"] = args.min_repeat_days
+    if args.spread_half_days is not None:
+        overrides["SPREAD_HALF_DAYS"] = args.spread_half_days
     if args.top_n is not None:
         overrides["TOP_N"] = args.top_n
     if args.signature_min_messages is not None:
@@ -390,14 +415,7 @@ def main():
         if not lp_participants:
             log(f"Skipping 'last {days} days' section — no messages in that window.")
         else:
-            lp_cfg = cfg.make_profile(
-                MIN_WORD_LENGTH=cfg.LAST_PERIOD_MIN_WORD_LENGTH,
-                MIN_PHRASE_LENGTH=cfg.LAST_PERIOD_MIN_PHRASE_LENGTH,
-                MIN_REPEAT_COUNT=cfg.LAST_PERIOD_MIN_REPEAT_COUNT,
-                TOP_N=cfg.LAST_PERIOD_TOP_N,
-                SIGNATURE_MIN_MESSAGES=cfg.LAST_PERIOD_SIGNATURE_MIN_MESSAGES,
-                SIGNATURE_TOP_N_PER_PERSON=cfg.LAST_PERIOD_SIGNATURE_TOP_N_PER_PERSON,
-            )
+            lp_cfg = loose_profile()
             lp_bundle = compute_bundle(
                 df_lp, lp_participants, lp_cfg, log_label=f"last {days}d",
                 aliases=mention_aliases,
@@ -419,14 +437,7 @@ def main():
             log(f"Skipping 'arcs' section — no {os.path.basename(str(args.arc_summary))} found. "
                 f"Run arc_analyzer.py first to enable it.")
         else:
-            arc_cfg = cfg.make_profile(
-                MIN_WORD_LENGTH=cfg.LAST_PERIOD_MIN_WORD_LENGTH,
-                MIN_PHRASE_LENGTH=cfg.LAST_PERIOD_MIN_PHRASE_LENGTH,
-                MIN_REPEAT_COUNT=cfg.LAST_PERIOD_MIN_REPEAT_COUNT,
-                TOP_N=cfg.LAST_PERIOD_TOP_N,
-                SIGNATURE_MIN_MESSAGES=cfg.LAST_PERIOD_SIGNATURE_MIN_MESSAGES,
-                SIGNATURE_TOP_N_PER_PERSON=cfg.LAST_PERIOD_SIGNATURE_TOP_N_PER_PERSON,
-            )
+            arc_cfg = loose_profile()
             for i, seg in enumerate(segments, start=1):
                 label = seg["label"]
                 df_arc = _filter_df(df, start=seg["start"][:10], end=seg["end"][:10])

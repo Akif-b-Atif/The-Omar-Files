@@ -16,10 +16,37 @@ Usage:
     python extract_identities.py <data dir>/Raw_Exports/00_initial_port.txt
 """
 import sys
+from collections import Counter
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import omar_paths  # noqa: E402
-from common import parse_export, load_identities, save_identities, warn_if_suspicious  # noqa: E402
+from omar_identities import alias_key, strip_isolates  # noqa: E402
+from common import (  # noqa: E402
+    parse_export, load_identities, save_identities, warn_if_suspicious, assign_alias,
+)
+
+
+def collect_unknown_senders(filepaths, alias_map):
+    """{label: message count} for every sender label in the given raw
+    exports that alias_map doesn't know. Labels that differ only in
+    case/emoji-variation/'~ ' prefix are one label (the first spelling
+    seen), since they resolve identically."""
+    unknown = Counter()
+    spelling = {}  # alias_key -> first spelling seen
+    for filepath in filepaths:
+        with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+            raw_line_count = sum(1 for line in f if line.strip())
+        messages = parse_export(filepath)
+        warn_if_suspicious(filepath, messages, raw_line_count)
+        for msg in messages:
+            if msg['sender'] is None:
+                continue
+            label = strip_isolates(msg['sender']).strip()
+            key = alias_key(label)
+            if key not in alias_map:
+                unknown[spelling.setdefault(key, label)] += 1
+    return unknown
 
 
 def main():
@@ -28,25 +55,12 @@ def main():
         sys.exit(1)
 
     try:
-        IDENTITIES_PATH = omar_paths.require_paths().identities
+        identities_path = omar_paths.require_paths().identities
     except omar_paths.DataDirError as e:
         sys.exit(str(e))
-    data, alias_map = load_identities(IDENTITIES_PATH)
+    data, alias_map = load_identities(identities_path)
 
-    unknown = {}
-    for filepath in sys.argv[1:]:
-        with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
-            raw_line_count = sum(1 for l in f if l.strip())
-        messages = parse_export(filepath)
-        warn_if_suspicious(filepath, messages, raw_line_count)
-        for msg in messages:
-            sender = msg['sender']
-            if sender is None:
-                continue
-            key = sender.strip().lower()
-            if key not in alias_map:
-                unknown[sender.strip()] = unknown.get(sender.strip(), 0) + 1
-
+    unknown = collect_unknown_senders(sys.argv[1:], alias_map)
     if not unknown:
         print("No unknown senders found — identities.json already covers everyone in these files.")
         return
@@ -54,32 +68,30 @@ def main():
     print(f"Found {len(unknown)} unrecognized sender label(s). Going through them, "
           f"most frequent first.\n")
 
-    for sender, count in sorted(unknown.items(), key=lambda x: -x[1]):
+    for sender, count in unknown.most_common():
         names_list = [p['name'] for p in data['identities']]
         print(f"\n--- '{sender}'  (appears {count} times) ---")
         if names_list:
             print("Existing identities: " + ", ".join(names_list))
-        choice = input(
-            "Type an EXISTING name to add this as an alias, "
-            "a NEW name to create a new identity, "
-            "or just press Enter to skip for now: "
-        ).strip()
+        try:
+            choice = input(
+                "Type an EXISTING name to add this as an alias, "
+                "a NEW name to create a new identity, "
+                "or just press Enter to skip for now: "
+            ).strip()
+        except EOFError:
+            choice = ""
 
         if not choice:
             print("Skipped (will show up again next time you run this).")
             continue
 
-        existing = next((p for p in data['identities'] if p['name'].lower() == choice.lower()), None)
-        if existing:
-            existing['aliases'].append(sender)
-            alias_map[sender.lower()] = existing['name']
-            print(f"Added '{sender}' as an alias of {existing['name']}.")
-        else:
-            data['identities'].append({"name": choice, "aliases": [sender]})
-            alias_map[sender.lower()] = choice
-            print(f"Created new identity '{choice}' with alias '{sender}'.")
+        is_new = not any(p['name'].lower() == choice.lower() for p in data['identities'])
+        canonical = assign_alias(data, alias_map, sender, choice)
+        print(f"Created new identity '{canonical}' with alias '{sender}'." if is_new
+              else f"Added '{sender}' as an alias of {canonical}.")
 
-        save_identities(data, IDENTITIES_PATH)  # save after every answer, no lost progress
+        save_identities(data, identities_path)  # save after every answer, no lost progress
 
     print(f"\nDone. identities.json now has {len(data['identities'])} identities.")
 

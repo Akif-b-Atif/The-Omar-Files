@@ -198,7 +198,7 @@ def parse_chat(filepath):
         raise ValueError("No messages parsed. Check LINE_REGEX / DATE_FORMAT against your export.")
 
     df = pd.DataFrame(messages)
-    df.sort_values("timestamp", inplace=True)
+    df.sort_values("timestamp", kind="stable", inplace=True)
     df.reset_index(drop=True, inplace=True)
     return df
 

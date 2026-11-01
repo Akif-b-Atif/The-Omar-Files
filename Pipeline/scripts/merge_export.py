@@ -259,10 +259,10 @@ def main():
         paths = omar_paths.require_paths()
     except omar_paths.DataDirError as e:
         sys.exit(str(e))
-    ARCHIVE_PATH = paths.archive
+    archive_path = paths.archive
     new_sha = file_sha256(new_path)
 
-    archive_blocks = parse_normalized_blocks(ARCHIVE_PATH)
+    archive_blocks = parse_normalized_blocks(archive_path)
     new_blocks = parse_normalized_blocks(new_path)
 
     if not new_blocks:
@@ -273,10 +273,10 @@ def main():
         # First-ever merge: the archive doesn't exist yet, so there's
         # nothing to compare against or insert relative to — the new
         # file becomes the whole archive, exactly as it is.
-        write_atomic(ARCHIVE_PATH, '\n'.join(b['text'] for b in new_blocks) + '\n')
+        write_atomic(archive_path, '\n'.join(b['text'] for b in new_blocks) + '\n')
         write_log(paths.merge_log, new_path.name, new_sha, len(new_blocks), 0, 0,
                   "archive was empty (first merge)")
-        print(f"Created {ARCHIVE_PATH} with {len(new_blocks)} line(s).")
+        print(f"Created {archive_path} with {len(new_blocks)} line(s).")
         return
 
     a_leading, a_dated = decompose(archive_blocks)
@@ -320,7 +320,7 @@ def main():
 
     lines = render(a_leading, merged_dated, appendix)
 
-    write_atomic(ARCHIVE_PATH, '\n'.join(lines) + '\n')
+    write_atomic(archive_path, '\n'.join(lines) + '\n')
 
     notes = []
     if appendix:
@@ -337,7 +337,7 @@ def main():
               skipped_placeholder, note)
 
     total_skipped = skipped_dup + skipped_placeholder
-    print(f"Merged {new_path.name} into {ARCHIVE_PATH}")
+    print(f"Merged {new_path.name} into {archive_path}")
     print(f"  {added} new message(s) added, {total_skipped} already-present message(s) skipped "
           f"({skipped_dup} exact duplicate, {skipped_placeholder} placeholder superseded by archive).")
     if note:

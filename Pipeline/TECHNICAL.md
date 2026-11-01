@@ -270,22 +270,40 @@ a run is interrupted partway through.
 
 ## @mentions
 
-WhatsApp mentions appear in message text as `@` followed directly by a
-phone number, e.g. `@923001234567`. During normalization, any such
-mention is checked against `identities.json`: if the number matches an
-alias (as `<number>@s.whatsapp.net` or as a bare number), it's
-rewritten to `@CanonicalName`. If it doesn't match anything known, it's
-left exactly as typed.
+WhatsApp mentions appear in message text in two shapes:
 
-Only sequences of 7-15 digits directly after an `@` are treated as
-possible mentions, so short numbers that happen to follow an `@` (a
-year, a small count) are never misread as one — and even then, nothing
-is rewritten unless the digits happen to match a real alias already on
-file.
+- `@923001234567` — `@` directly followed by a phone number or LID
+  (`msgstore.db` extractions, and people who aren't saved contacts).
+- `@<name>` where the name is the contact name saved on the exporting
+  phone, wrapped in invisible Unicode directional isolates (`U+2068` /
+  `U+2069`). Two phones can save the same person under different names
+  (`@SuperAhsan Ali` vs `@Junior Mossad Agent Ahsan`).
+
+During normalization every mention is checked against `identities.json`:
+a number matches an alias as `<number>@s.whatsapp.net`, `<number>@lid` or
+a bare number; a name (or a formatted phone number such as
+`+966 58 371 5010`) matches an alias directly. A match is rewritten to
+`@CanonicalName`, so the same message exported from two phones comes out
+as identical text and merges as a duplicate. A mention that matches
+nothing keeps its label (minus the invisible isolates) and is listed at
+the end of the run — add each listed label as an alias and re-run, or
+the two copies of that message won't be recognized as duplicates.
+
+Lookups ignore case, emoji variation selectors, Unicode compatibility
+forms and WhatsApp's `~ ` prefix for non-contacts (`omar_identities.alias_key`).
+Canonical names count as aliases of themselves, and an alias claimed by
+two different identities is reported as a warning instead of one silently
+overwriting the other.
+
+Only sequences of 7-20 digits directly after an `@` (not preceded by a
+letter or digit, so `me@123...` isn't one) are treated as possible
+number mentions, so short numbers that happen to follow an `@` (a year, a
+small count) are never misread as one.
 
 ## Preserve-everything policy
 
-Nothing is silently dropped, except genuinely blank lines:
+Nothing is silently dropped, except blank lines *between* messages (a
+blank line inside a multi-paragraph message is part of it and is kept):
 
 - **Media/deleted/call placeholders** — `<Media omitted>`,
   image/video/audio/sticker/GIF/document omitted, "this message was

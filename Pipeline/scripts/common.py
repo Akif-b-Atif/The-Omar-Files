@@ -7,8 +7,15 @@ If your exports don't parse correctly, this is the file to fix — see
 "If the parser doesn't match an export" in Pipeline/TECHNICAL.md.
 """
 import re
+import sys
 import json
 from datetime import datetime
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # Pipeline/
+from omar_identities import (  # noqa: E402
+    FSI, PDI, alias_key, build_alias_map, strip_isolates,
+)
 
 # ---------------------------------------------------------------------------
 # CONFIG — adjust if your WhatsApp export format differs
@@ -99,7 +106,23 @@ PLACEHOLDER_PATTERNS = [
 
 # WhatsApp sometimes inserts invisible direction-marker characters around
 # the " - " separator, which breaks the regexes above if not stripped.
-INVISIBLE_CHARS = ['\u200e', '\u200f', '\ufeff']
+# The directional ISOLATES (U+2066-U+2069) are deliberately NOT in this
+# list: WhatsApp wraps @-mention labels in U+2068/U+2069, and
+# resolve_mentions() needs them to know where a multi-word label ends.
+# They're stripped there, once the mentions have been resolved.
+INVISIBLE_CHARS = ['\u200e', '\u200f', '\ufeff',
+                   '\u202a', '\u202b', '\u202c', '\u202d', '\u202e']
+
+# A "sender" label that is really the start of a system event whose text
+# happens to contain ": " (e.g. "Omar changed the group description: hi").
+# Real contact names basically never contain these verbs, so a label that
+# does is treated as event text, not as a person.
+_SYSTEM_EVENT_LABEL_RE = re.compile(
+    r"\s(?:changed|added|removed|joined|created|deleted|pinned|unpinned|"
+    r"turned|updated|reset|invited|was added|were added)\b"
+    r"|^(?:you|messages and calls)\b.*\b(?:changed|added|removed|created|encrypted)\b",
+    re.I,
+)
 
 # Output date/time format, applied consistently to every parsed message
 # regardless of which source format it came from — DD-Mon-YYYY avoids the
@@ -271,6 +294,39 @@ def _day_month_values(date_str):
     return a, b
 
 
+def _date_order_evidence(path):
+    """Scans EVERY dated line of a raw export and returns
+    (day_first_lines, month_first_lines, ambiguous_lines): how many lines
+    prove day-first, prove month-first, or fit both readings."""
+    day_first = month_first = ambiguous = 0
+    pats = [pat['regex'] for pat in MSG_LINE_PATTERNS + EVENT_LINE_PATTERNS]
+    with open(path, 'r', encoding='utf-8', errors='replace') as f:
+        for raw_line in f:
+            line = clean_line(raw_line)
+            # First matching pattern wins -- the same priority parse_export
+            # uses, so a message body can't be mistaken for a date line.
+            m = next((mm for mm in (rx.match(line) for rx in pats) if mm), None)
+            vals = _day_month_values(m.group('date')) if m else None
+            if not vals:
+                continue
+            a_val, b_val = vals
+            if a_val > 12 and b_val <= 12:
+                day_first += 1
+            elif b_val > 12 and a_val <= 12:
+                month_first += 1
+            else:
+                ambiguous += 1
+    return day_first, month_first, ambiguous
+
+
+def _order_from_evidence(day_first, month_first):
+    if day_first and not month_first:
+        return True
+    if month_first and not day_first:
+        return False
+    return None
+
+
 def detect_date_order(path):
     """Looks at EVERY dated line in a raw export and works out, once for
     the whole file, whether it writes dates day-first (13/12/2024) or
@@ -284,28 +340,8 @@ def detect_date_order(path):
     (month-first), or None when the file gives no evidence (every date
     is ambiguous) or contradicts itself -- callers then fall back to the
     per-pattern defaults, exactly as before."""
-    day_first_evidence = month_first_evidence = 0
-    pats = [pat['regex'] for pat in MSG_LINE_PATTERNS + EVENT_LINE_PATTERNS]
-    with open(path, 'r', encoding='utf-8', errors='replace') as f:
-        for raw_line in f:
-            line = clean_line(raw_line)
-            for rx in pats:
-                m = rx.match(line)
-                if not m:
-                    continue
-                vals = _day_month_values(m.group('date'))
-                if vals:
-                    a, b = vals
-                    if a > 12 and b <= 12:
-                        day_first_evidence += 1
-                    elif b > 12 and a <= 12:
-                        month_first_evidence += 1
-                break
-    if day_first_evidence and not month_first_evidence:
-        return True
-    if month_first_evidence and not day_first_evidence:
-        return False
-    return None
+    day_first, month_first, _ = _date_order_evidence(path)
+    return _order_from_evidence(day_first, month_first)
 
 
 def normalize_date(raw_date, prefer_day_first=True):
@@ -337,27 +373,56 @@ def normalize_time(raw_time):
     return raw_time
 
 
-# In-message @mentions look like "@923001234567" — an @ followed by a
-# phone number, with no "@s.whatsapp.net"/"@lid" suffix in the visible
-# text (that suffix only appears in identities.json aliases). 7-15 digits
-# covers real phone numbers while avoiding false positives on short
+# In-message @mentions come in two shapes:
+#   "@923001234567"            -- a bare phone/LID number (msgstore.db
+#                                 extractions, and exports of people who
+#                                 aren't saved contacts), and
+#   "@<FSI>Contact Name<PDI>"  -- the contact's name as saved on the
+#                                 exporting phone, wrapped in invisible
+#                                 directional isolates (text exports).
+# The number form carries no "@s.whatsapp.net"/"@lid" suffix in the visible
+# text (the suffix only appears in identities.json aliases). 7-20 digits
+# covers real phone numbers/LIDs while avoiding false positives on short
 # numbers like years.
-MENTION_RE = re.compile(r'@(\d{7,15})\b')
+MENTION_RE = re.compile(
+    rf'(?<![\w@])@(?:{FSI}(?P<label>[^{PDI}\n]*){PDI}|(?P<digits>\d{{7,20}})\b)'
+)
+_NUMBER_SUFFIXES = ('@s.whatsapp.net', '@lid', '@bot', '')
 
 
-def resolve_mentions(text, alias_map):
-    """Replaces any @<number> mention in text with @<CanonicalName> if the
-    number matches a known alias — tried as "<number>@s.whatsapp.net",
-    "<number>@lid", or a bare "<number>" alias, in that order. Anything
-    that doesn't match a known alias is left exactly as it was — never
-    guessed, never dropped."""
+def _lookup_mention(label, alias_map):
+    """Canonical name for a mention label (a contact name, a formatted
+    phone number like "+966 58 371 5010", or bare digits), or None."""
+    candidates = [alias_key(label)]
+    digits = re.sub(r'\D', '', label)
+    if len(digits) >= 7 and not re.search(r'[^\d\s+()-]', label):
+        candidates += [alias_key(digits + suffix) for suffix in _NUMBER_SUFFIXES]
+    return next((alias_map[c] for c in candidates if c in alias_map), None)
+
+
+def resolve_mentions(text, alias_map, unresolved=None):
+    """Replaces every @-mention in text with @<CanonicalName> when its
+    label/number matches a known alias in `alias_map` (keys as produced by
+    omar_identities.alias_key). Mentions that match nothing keep their
+    label -- never guessed, never dropped -- but lose their invisible
+    isolate wrappers, so the same message exported from two phones differs
+    only by contact name rather than by hidden characters. Any stray
+    isolate characters elsewhere in the text are removed too.
+
+    `unresolved`: optional Counter; every label that couldn't be resolved
+    is tallied in it so the caller can tell the user which aliases to add.
+    """
     def repl(match):
-        digits = match.group(1)
-        for candidate in (f"{digits}@s.whatsapp.net", f"{digits}@lid", digits):
-            if candidate in alias_map:
-                return f"@{alias_map[candidate]}"
-        return match.group(0)
-    return MENTION_RE.sub(repl, text)
+        label = match.group('label')
+        if label is None:
+            label = match.group('digits')
+        canonical = _lookup_mention(label, alias_map) if label.strip() else None
+        if canonical is not None:
+            return f"@{canonical}"
+        if unresolved is not None and label.strip():
+            unresolved[label.strip()] += 1
+        return f"@{label}"
+    return strip_isolates(MENTION_RE.sub(repl, text))
 
 
 def clean_line(line):
@@ -378,18 +443,40 @@ def is_placeholder_msg(msg_text):
 
 def load_identities(path):
     """Returns (full_json_data, alias_map) where alias_map maps
-    lowercased alias -> canonical name, for fast lookup."""
+    omar_identities.alias_key(alias) -> canonical name, for fast lookup.
+    Canonical names are implicit aliases of themselves. An alias claimed
+    by two different identities is reported on stderr (the first claimant
+    wins) instead of one silently overwriting the other."""
+    path = Path(path)
     if not path.exists():
         data = {"identities": []}
     else:
         with open(path, 'r', encoding='utf-8') as f:
             data = json.load(f)
-    alias_map = {}
-    for person in data.get('identities', []):
-        canonical = person['name']
-        for alias in person.get('aliases', []):
-            alias_map[alias.strip().lower()] = canonical
+    alias_map, conflicts = build_alias_map(data)
+    for key, names in sorted(conflicts.items()):
+        print(f"WARNING: alias '{key}' is claimed by more than one identity "
+              f"({', '.join(sorted(names))}); using '{alias_map[key]}'. "
+              f"Fix identities.json.", file=sys.stderr)
     return data, alias_map
+
+
+def assign_alias(data, alias_map, label, choice):
+    """Records `label` as an alias of the identity named `choice` (matched
+    case-insensitively), creating that identity if it doesn't exist yet.
+    Updates both `data` (to be saved) and `alias_map` (for lookups) and
+    returns the canonical name. Shared by normalize_export.py and
+    extract_identities.py so the two prompts can't drift apart."""
+    label = label.strip()
+    existing = next((p for p in data['identities']
+                     if p['name'].lower() == choice.lower()), None)
+    if existing is None:
+        existing = {"name": choice, "aliases": []}
+        data['identities'].append(existing)
+    if label not in existing['aliases']:
+        existing['aliases'].append(label)
+    alias_map[alias_key(label)] = existing['name']
+    return existing['name']
 
 
 def save_identities(data, path):
@@ -418,6 +505,20 @@ def warn_if_suspicious(path, messages, raw_line_count):
               f"That's a low match rate — worth spot-checking the output. ***\n")
 
 
+def _match_line(line, patterns):
+    """First pattern in `patterns` that matches `line`, as (pattern, match),
+    or (None, None)."""
+    for pat in patterns:
+        m = pat['regex'].match(line)
+        if m:
+            return pat, m
+    return None, None
+
+
+def _looks_like_system_event(sender_label):
+    return bool(_SYSTEM_EVENT_LABEL_RE.search(sender_label))
+
+
 def parse_export(path, day_first=None):
     """
     Parses a raw WhatsApp .txt export (or a msgstore.db extraction) into
@@ -426,67 +527,77 @@ def parse_export(path, day_first=None):
     unparsed is True for a line that matched no known pattern and also
     wasn't a continuation of an in-progress message — these are kept
     verbatim rather than dropped; nothing is ever silently discarded.
-    Multi-line messages (message bodies containing literal newlines) are
-    reassembled into a single entry.
+    Multi-line messages (message bodies containing literal newlines,
+    including blank lines between paragraphs) are reassembled into a
+    single entry.
 
     day_first: how to read ambiguous dates like 04/08/2024. Left as None
     (the default), it's worked out once per FILE by detect_date_order(),
     so a single unambiguous line like 13/12/2024 settles every ambiguous
     one in the same export. If the file gives no evidence either way,
-    each line pattern's own default applies, as before.
+    each line pattern's own default applies, as before (with a warning if
+    the file actually contained ambiguous dates, since then that default
+    is a guess).
     """
     messages = []
     current = None
+    pending_blank_lines = 0  # blank lines seen since `current`'s last text
+
     if day_first is None:
-        day_first = detect_date_order(path)
+        df_lines, mf_lines, ambiguous_lines = _date_order_evidence(path)
+        day_first = _order_from_evidence(df_lines, mf_lines)
+        if day_first is None and ambiguous_lines:
+            print(f"WARNING: {path}: {ambiguous_lines} date(s) could be day-first "
+                  f"or month-first and nothing in the file settles it; assuming "
+                  f"day-first. If that's wrong, every such date is silently "
+                  f"swapped.", file=sys.stderr)
+
+    def start_entry(pat, m, sender, msg):
+        nonlocal current, pending_blank_lines
+        if current:
+            messages.append(current)
+        current = {
+            'date': normalize_date(m.group('date'),
+                                   pat['prefer_day_first'] if day_first is None else day_first),
+            'time': normalize_time(m.group('time')),
+            'sender': sender,
+            'msg': msg.strip(),
+            'unparsed': False,
+        }
+        pending_blank_lines = 0
 
     with open(path, 'r', encoding='utf-8', errors='replace') as f:
         for raw_line in f:
             line = clean_line(raw_line)
             if not line.strip():
+                # A blank line is only kept if more text follows it inside
+                # the same message (a paragraph break); blanks between two
+                # messages, or at the end of the file, are just spacing.
+                if current:
+                    pending_blank_lines += 1
                 continue
 
-            matched = False
-            for pat in MSG_LINE_PATTERNS:
-                m = pat['regex'].match(line)
-                if m:
-                    if current:
-                        messages.append(current)
-                    current = {
-                        'date': normalize_date(m.group('date'),
-                                       pat['prefer_day_first'] if day_first is None else day_first),
-                        'time': normalize_time(m.group('time')),
-                        'sender': m.group('sender').strip(),
-                        'msg': m.group('msg').strip(),
-                        'unparsed': False,
-                    }
-                    matched = True
-                    break
-            if matched:
+            pat, m = _match_line(line, MSG_LINE_PATTERNS)
+            if m and _looks_like_system_event(m.group('sender')):
+                # e.g. "Omar changed the group description: hi" -- the
+                # ": " made it look like "sender: message". It's an event
+                # whose text is the whole remainder of the line.
+                start_entry(pat, m, None, f"{m.group('sender')}: {m.group('msg')}")
+                continue
+            if m:
+                start_entry(pat, m, m.group('sender').strip(), m.group('msg'))
                 continue
 
-            for pat in EVENT_LINE_PATTERNS:
-                m = pat['regex'].match(line)
-                if m:
-                    if current:
-                        messages.append(current)
-                    current = {
-                        'date': normalize_date(m.group('date'),
-                                       pat['prefer_day_first'] if day_first is None else day_first),
-                        'time': normalize_time(m.group('time')),
-                        'sender': None,
-                        'msg': m.group('event').strip(),
-                        'unparsed': False,
-                    }
-                    matched = True
-                    break
-            if matched:
+            pat, m = _match_line(line, EVENT_LINE_PATTERNS)
+            if m:
+                start_entry(pat, m, None, m.group('event'))
                 continue
 
             # Not a new timestamped line -> continuation of the previous
             # (multi-line) message.
             if current:
-                current['msg'] += '\n' + line
+                current['msg'] += '\n' * (pending_blank_lines + 1) + line
+                pending_blank_lines = 0
             else:
                 # A line that matches nothing AND isn't a continuation of
                 # anything — e.g. junk at the very top of the file, or a
@@ -501,8 +612,8 @@ def parse_export(path, day_first=None):
                     'unparsed': True,
                 })
 
-        if current:
-            messages.append(current)
+    if current:
+        messages.append(current)
 
     return messages
 
@@ -575,13 +686,18 @@ def parse_normalized_blocks(path):
     if not path.exists():
         return blocks
 
+    pending_blank_lines = 0  # blank lines since the current block's last text
     with open(path, 'r', encoding='utf-8', errors='replace') as f:
         for raw_line in f:
             line = raw_line.rstrip('\n')
             if not line.strip():
+                # Kept only if more text follows inside the same message
+                # (a paragraph break); see parse_export.
+                pending_blank_lines += 1
                 continue
             m = ARCHIVE_LINE_RE.match(line)
             if m:
+                pending_blank_lines = 0
                 flush()
                 try:
                     dt = datetime.strptime(f"{m.group('date')} {m.group('time')}", _ARCHIVE_DT_FMT)
@@ -590,7 +706,9 @@ def parse_normalized_blocks(path):
                 current_lines = [line]
                 current_dt = dt
             elif current_lines is not None:
+                current_lines.extend([''] * pending_blank_lines)
                 current_lines.append(line)
+                pending_blank_lines = 0
             else:
                 # A standalone line with no date/time prefix at all and
                 # nothing before it to attach to (e.g. a genuine

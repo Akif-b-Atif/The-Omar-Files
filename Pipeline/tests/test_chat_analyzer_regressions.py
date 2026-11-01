@@ -167,3 +167,77 @@ def test_future_archive_dates_are_preserved():
     }])
 
     assert pd.Timestamp(df["timestamp"].max()).date().isoformat() == "2026-12-10"
+
+
+# ---------------------------------------------------------------------------
+# Identity / mention regressions
+# ---------------------------------------------------------------------------
+
+def test_isolate_wrapped_tag_never_becomes_a_phrase():
+    """A message that is only "@<FSI>Akif Bin Atif<PDI>" used to leave the
+    bare name behind (the isolate hid the name from both the tag regex and
+    the mention matcher) and top the repeated-phrases list."""
+    tag = "@\u2068Akif Bin Atif\u2069"
+    df = build_dataframe(_records([(i, "Alice", tag) for i in range(5)]))
+    pattern, _ = _compile_mention_patterns(["Alice", "Akif"], {"akif bin atif": "Akif"})
+    df = prepare_lexical_text(df, ["Alice", "Akif"], {"akif bin atif": "Akif"})
+    idx = _build_phrase_index(df, cfg, mention_pattern=pattern)
+    assert idx["counter"] == {}
+    assert "akif" not in " ".join(df["lexical_text"]).lower()
+
+
+def test_isolate_wrapped_tag_counts_as_a_mention():
+    df = build_dataframe(_records([(0, "Alice", "@\u2068Akif Bin Atif\u2069 hey")]))
+    _, received, pairs = _compute_mentions(df, ["Alice", "Akif"], {"akif bin atif": "Akif"})
+    assert received["Akif"] == 1 and pairs[0]["from"] == "Alice"
+
+
+def test_exact_name_beats_first_name_of_longer_name():
+    _, lookup = _compile_mention_patterns(["Abdullah", "Abdullah Hanif", "Ahmed N.", "Ahmed T."])
+    assert lookup["abdullah"] == "Abdullah"
+    assert "ahmed" not in lookup  # genuinely ambiguous first name
+
+
+def test_possessive_tag_matches_but_embedded_at_does_not():
+    pattern, _ = _compile_mention_patterns(["Omar"])
+    assert pattern.search("@Omar's phone")
+    assert not pattern.search("mail me@Omar")
+    assert not pattern.search("@Omar-ish")
+
+
+def test_system_line_with_colon_and_long_sender_are_parsed_correctly(tmp_path):
+    from parsing import parse_chat_file
+    long_label = "A Very Long Display Name That Goes Past Forty Characters [UNRESOLVED]"
+    path = tmp_path / "a.txt"
+    path.write_text(
+        "01-Aug-2026, 00:32 - [SYSTEM] Omar renamed: it\n"
+        f"01-Aug-2026, 00:33 - {long_label}: hello\n", encoding="utf-8")
+    recs = parse_chat_file(path)
+    assert recs[0]["is_system"] and recs[0]["sender"] is None
+    assert recs[1]["sender"] == long_label and not recs[1]["is_system"]
+
+
+def test_same_minute_messages_keep_archive_order():
+    df = build_dataframe([
+        {"date_s": "01-Aug-2026", "time_s": "10:00", "sender": "Alice",
+         "text": f"m{i}", "is_system": False} for i in range(40)
+    ])
+    assert df["text"].tolist() == [f"m{i}" for i in range(40)]
+
+
+def test_non_latin_words_are_counted():
+    from parsing import tokenize
+    assert tokenize("don’t عصّین hello") == ["don't", "عصّین", "hello"]
+    df = build_dataframe(_records([(0, "Alice", "مرحبا بك")]))
+    assert df.loc[0, "word_count"] == 2
+
+
+def test_nickname_parts_that_are_ordinary_words_stay_in_word_stats(tmp_path):
+    import json
+    import chat_config
+    ids = tmp_path / "ids.json"
+    ids.write_text(json.dumps({"identities": [
+        {"name": "Zephyrine", "aliases": ["Big Zeph"]}]}), encoding="utf-8")
+    tokens = chat_config._name_tokens_from_identities(ids)
+    assert "zephyrine" in tokens and "zeph" in tokens
+    assert "big" not in tokens

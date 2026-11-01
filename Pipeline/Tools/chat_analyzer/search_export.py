@@ -8,7 +8,7 @@ import json
 
 
 def build_search_data(df, participants, individual_stats, overall, timedist):
-    real = df[(~df["is_system"]) & (df["is_real_text"] | df["is_media"] | df["is_deleted"])].sort_values("timestamp")
+    real = df[(~df["is_system"]) & (df["is_real_text"] | df["is_media"] | df["is_deleted"])].sort_values("timestamp", kind="stable")
 
     sender_index = {p: i for i, p in enumerate(participants)}
     timestamps = []

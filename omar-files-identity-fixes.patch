@@ -1,0 +1,1544 @@
+From ea02fb0f0165d44b0b64f6608eadb0d9d493cdea Mon Sep 17 00:00:00 2001
+From: Akif-b-Atif <akif.b.atif@gmail.com>
+Date: Sun, 1 Nov 2026 15:29:44 +0000
+Subject: [PATCH] Fix @-mention/identity resolution and related parsing bugs
+
+- Resolve contact-name @mentions (wrapped in U+2068/U+2069 isolates), not
+  just @<digits>, so the same message exported from two phones normalizes
+  identically and merges as a duplicate
+- Stop isolate-wrapped tags leaking names into phrase/word stats and
+  mention counts (the bogus top 'Akif Bin Atif' phrase)
+- Canonical names are implicit aliases; alias keys ignore case, emoji
+  variation selectors, NFKC form and the '~ ' non-contact prefix; report
+  alias conflicts instead of silently overwriting
+- Treat colon-containing event lines as system events; keep blank lines
+  inside multi-paragraph messages
+- Analyzer: [SYSTEM] lines never become senders, sender-length cap raised,
+  stable timestamp sort, Unicode-aware word tokenizer, exact-name mention
+  matches beat first-name matches, saner mention boundaries
+- Nickname parts that are ordinary words no longer become stopwords
+- normalize_export saves identities after every answer; shared
+  assign_alias; warn on unresolved mentions and ambiguous date order
+- Add regression tests
+---
+ Pipeline/TECHNICAL.md                         |  44 ++-
+ Pipeline/Tools/arc_analyzer/arc_analyzer.py   |   2 +-
+ Pipeline/Tools/chat_analyzer/analyze_chat.py  |  17 +-
+ Pipeline/Tools/chat_analyzer/chat_config.py   |  45 ++-
+ Pipeline/Tools/chat_analyzer/parsing.py       |  35 ++-
+ Pipeline/Tools/chat_analyzer/search_export.py |   2 +-
+ Pipeline/Tools/chat_analyzer/stats_engine.py  |  69 ++--
+ Pipeline/omar_identities.py                   |  64 ++++
+ Pipeline/scripts/common.py                    | 294 ++++++++++++------
+ Pipeline/scripts/extract_identities.py        |  80 +++--
+ Pipeline/scripts/merge_export.py              |  12 +-
+ Pipeline/scripts/normalize_export.py          | 144 +++++----
+ .../tests/test_chat_analyzer_regressions.py   |  74 +++++
+ Pipeline/tests/test_identity_resolution.py    | 139 +++++++++
+ 14 files changed, 766 insertions(+), 255 deletions(-)
+ create mode 100644 Pipeline/omar_identities.py
+ create mode 100644 Pipeline/tests/test_identity_resolution.py
+
+diff --git a/Pipeline/TECHNICAL.md b/Pipeline/TECHNICAL.md
+index 2a8917a..47ce55e 100644
+--- a/Pipeline/TECHNICAL.md
++++ b/Pipeline/TECHNICAL.md
+@@ -270,22 +270,40 @@ a run is interrupted partway through.
+ 
+ ## @mentions
+ 
+-WhatsApp mentions appear in message text as `@` followed directly by a
+-phone number, e.g. `@923001234567`. During normalization, any such
+-mention is checked against `identities.json`: if the number matches an
+-alias (as `<number>@s.whatsapp.net` or as a bare number), it's
+-rewritten to `@CanonicalName`. If it doesn't match anything known, it's
+-left exactly as typed.
+-
+-Only sequences of 7-15 digits directly after an `@` are treated as
+-possible mentions, so short numbers that happen to follow an `@` (a
+-year, a small count) are never misread as one — and even then, nothing
+-is rewritten unless the digits happen to match a real alias already on
+-file.
++WhatsApp mentions appear in message text in two shapes:
++
++- `@923001234567` — `@` directly followed by a phone number or LID
++  (`msgstore.db` extractions, and people who aren't saved contacts).
++- `@<name>` where the name is the contact name saved on the exporting
++  phone, wrapped in invisible Unicode directional isolates (`U+2068` /
++  `U+2069`). Two phones can save the same person under different names
++  (`@SuperAhsan Ali` vs `@Junior Mossad Agent Ahsan`).
++
++During normalization every mention is checked against `identities.json`:
++a number matches an alias as `<number>@s.whatsapp.net`, `<number>@lid` or
++a bare number; a name (or a formatted phone number such as
++`+966 58 371 5010`) matches an alias directly. A match is rewritten to
++`@CanonicalName`, so the same message exported from two phones comes out
++as identical text and merges as a duplicate. A mention that matches
++nothing keeps its label (minus the invisible isolates) and is listed at
++the end of the run — add each listed label as an alias and re-run, or
++the two copies of that message won't be recognized as duplicates.
++
++Lookups ignore case, emoji variation selectors, Unicode compatibility
++forms and WhatsApp's `~ ` prefix for non-contacts (`omar_identities.alias_key`).
++Canonical names count as aliases of themselves, and an alias claimed by
++two different identities is reported as a warning instead of one silently
++overwriting the other.
++
++Only sequences of 7-20 digits directly after an `@` (not preceded by a
++letter or digit, so `me@123...` isn't one) are treated as possible
++number mentions, so short numbers that happen to follow an `@` (a year, a
++small count) are never misread as one.
+ 
+ ## Preserve-everything policy
+ 
+-Nothing is silently dropped, except genuinely blank lines:
++Nothing is silently dropped, except blank lines *between* messages (a
++blank line inside a multi-paragraph message is part of it and is kept):
+ 
+ - **Media/deleted/call placeholders** — `<Media omitted>`,
+   image/video/audio/sticker/GIF/document omitted, "this message was
+diff --git a/Pipeline/Tools/arc_analyzer/arc_analyzer.py b/Pipeline/Tools/arc_analyzer/arc_analyzer.py
+index 86b1000..3578c41 100644
+--- a/Pipeline/Tools/arc_analyzer/arc_analyzer.py
++++ b/Pipeline/Tools/arc_analyzer/arc_analyzer.py
+@@ -198,7 +198,7 @@ def parse_chat(filepath):
+         raise ValueError("No messages parsed. Check LINE_REGEX / DATE_FORMAT against your export.")
+ 
+     df = pd.DataFrame(messages)
+-    df.sort_values("timestamp", inplace=True)
++    df.sort_values("timestamp", kind="stable", inplace=True)
+     df.reset_index(drop=True, inplace=True)
+     return df
+ 
+diff --git a/Pipeline/Tools/chat_analyzer/analyze_chat.py b/Pipeline/Tools/chat_analyzer/analyze_chat.py
+index c92aef0..f78b3b6 100644
+--- a/Pipeline/Tools/chat_analyzer/analyze_chat.py
++++ b/Pipeline/Tools/chat_analyzer/analyze_chat.py
+@@ -70,6 +70,7 @@ from search_export import build_search_data, write_search_json
+ SCRIPT_DIR = Path(__file__).resolve().parent
+ sys.path.insert(0, str(SCRIPT_DIR.parents[1]))  # Pipeline/
+ import omar_paths  # noqa: E402
++from omar_identities import build_alias_map  # noqa: E402
+ 
+ try:
+     _PATHS = omar_paths.get_paths()
+@@ -139,21 +140,15 @@ def load_arc_segments(arc_summary_path, arc_report_path):
+ 
+ 
+ def _load_mention_aliases():
++    """{alias_key: canonical name} for every alias that unambiguously
++    belongs to one identity. An alias shared by two identities is dropped
++    rather than guessed (see omar_identities.build_alias_map)."""
+     if not IDENTITIES_PATH.exists():
+         return {}
+     with open(IDENTITIES_PATH, "r", encoding="utf-8") as f:
+         identities = json.load(f)
+-    targets = {}
+-    for person in identities.get("identities", []):
+-        for alias in person.get("aliases", []):
+-            key = alias.strip().casefold()
+-            if key:
+-                targets.setdefault(key, set()).add(person["name"])
+-    return {
+-        alias: next(iter(names))
+-        for alias, names in targets.items()
+-        if len(names) == 1
+-    }
++    alias_map, conflicts = build_alias_map(identities)
++    return {key: name for key, name in alias_map.items() if key not in conflicts}
+ 
+ 
+ def compute_bundle(df, participants, cfg_profile, log_label="", aliases=None):
+diff --git a/Pipeline/Tools/chat_analyzer/chat_config.py b/Pipeline/Tools/chat_analyzer/chat_config.py
+index b85a0be..4c43f55 100644
+--- a/Pipeline/Tools/chat_analyzer/chat_config.py
++++ b/Pipeline/Tools/chat_analyzer/chat_config.py
+@@ -549,27 +549,46 @@ _EXTENDABLE = ("SWEAR_WORDS", "LAUGH_WORDS", "LAUGH_REGEX_PATTERNS",
+                "QUESTION_STARTERS", "EXTRA_STOPWORDS")
+ 
+ 
++def _ordinary_words():
++    """Words that occur in the generic baseline chat (baseline_corpus.py),
++    i.e. ordinary vocabulary rather than anyone's name."""
++    import re
++    from baseline_corpus import BASELINE_MESSAGES
++    return {w for msg in BASELINE_MESSAGES for w in re.findall(r"[^\W\d_]+", msg.lower())}
++
++
+ def _name_tokens_from_identities(identities_path):
+-    """Every canonical name, and every alias that looks like a name rather
+-    than a phone number / WhatsApp id, split into lowercase word tokens
+-    ("Alice Smith" -> alice, smith, alicesmith)."""
++    """Lowercase word tokens for every canonical name and every alias that
++    looks like a name rather than a phone number / WhatsApp id ("Alice
++    Smith" -> alice, smith, alicesmith).
++
++    Tokens of ALIASES are skipped when they're ordinary words (found in the
++    generic baseline chat): a nickname like "Big Hash" or "The Guy With
++    Back Problems" would otherwise make "big", "guy", "with", "back" and
++    "problems" vanish from every word statistic. Canonical names are always
++    kept whole."""
+     try:
+         with open(identities_path, "r", encoding="utf-8") as f:
+             data = _json.load(f)
+     except (OSError, ValueError):
+         return []
++
++    def words_of(label):
++        if not isinstance(label, str) or "@" in label:
++            return []
++        if sum(ch.isdigit() for ch in label) > 2:
++            return []  # a phone number, not a name
++        return [w for w in "".join(
++            ch if ch.isalpha() or ch.isspace() else " " for ch in label
++        ).lower().split() if len(w) > 1]
++
++    ordinary = _ordinary_words()
+     tokens = set()
+     for person in data.get("identities", []):
+-        labels = [person.get("name", "")] + list(person.get("aliases", []))
+-        for label in labels:
+-            if not isinstance(label, str) or "@" in label:
+-                continue
+-            if sum(ch.isdigit() for ch in label) > 2:
+-                continue  # a phone number, not a name
+-            words = [w for w in "".join(
+-                ch if ch.isalpha() or ch.isspace() else " " for ch in label
+-            ).lower().split() if len(w) > 1]
+-            tokens.update(words)
++        for label, keep_ordinary in [(person.get("name", ""), True)] + [
++                (alias, False) for alias in person.get("aliases", [])]:
++            words = words_of(label)
++            tokens.update(w for w in words if keep_ordinary or w not in ordinary)
+             if len(words) > 1:
+                 tokens.add("".join(words))
+     return sorted(tokens)
+diff --git a/Pipeline/Tools/chat_analyzer/parsing.py b/Pipeline/Tools/chat_analyzer/parsing.py
+index 4fad7a0..c4b501d 100644
+--- a/Pipeline/Tools/chat_analyzer/parsing.py
++++ b/Pipeline/Tools/chat_analyzer/parsing.py
+@@ -4,19 +4,24 @@ pandas DataFrame, one row per message (system messages included, flagged).
+ """
+ import re
+ import pandas as pd
+-import numpy as np
+ 
+ # --- regexes -----------------------------------------------------------
+ 
+ # Leading invisible marks WhatsApp sometimes inserts (LRM/RLM/BOM)
+ _INVISIBLE = "\u200e\u200f\ufeff"
++# Directional isolates WhatsApp wraps @-mention labels in. The pipeline
++# strips them while normalizing; this is the safety net for an archive
++# that still has them, so "@<FSI>Name<PDI>" can never leave a bare name
++# behind after the "@" is removed.
++_ISOLATES_RE = re.compile("[\u2066-\u2069]")
++_SYSTEM_MARKER = "[SYSTEM]"
+ 
+ DATE_PREFIX_RE = re.compile(
+     r"^[" + _INVISIBLE + r"]*(\d{1,2}-[A-Za-z]{3}-\d{4}), (\d{1,2}:\d{2}(?::\d{2})?) - "
+ )
+ MSG_RE = re.compile(
+     r"^[" + _INVISIBLE + r"]*(\d{1,2}-[A-Za-z]{3}-\d{4}), (\d{1,2}:\d{2}(?::\d{2})?) - "
+-    r"([^:\n]{1,40}?): (.*)$"
++    r"([^:\n]{1,100}?): (.*)$"
+ )
+ 
+ EDITED_SUFFIX_RE = re.compile(r"\s*<This message was edited>\s*$", re.I)
+@@ -38,7 +43,11 @@ UNPARSED_RE = re.compile(r"(?m)^\s*\[UNPARSED\s*-\s*review this line\].*$", re.I
+ DELETED_RE = re.compile(r"(?:this message was deleted|you deleted this message)", re.I)
+ CALL_RE = re.compile(r"(?:missed voice call|missed video call|^voice call$|^video call$)", re.I)
+ 
+-WORD_RE = re.compile(r"[A-Za-z']+")
++# A word: a run of letters in ANY script (so Arabic/Urdu/accented text is
++# counted, not silently ignored), including combining marks such as Arabic
++# diacritics, optionally joined by apostrophes ("don't", "don’t").
++_WORD_CHAR = r"(?:[^\W\d_]|[\u0300-\u036f\u0610-\u061a\u064b-\u065f\u0670])"
++WORD_RE = re.compile(rf"{_WORD_CHAR}+(?:['’]{_WORD_CHAR}+)*")
+ # A "@name" tag/mention token (e.g. "@Sarah") - used to exclude tags from
+ # word/phrase frequency analysis, since a tag isn't vocabulary.
+ TAG_RE = re.compile(r"@\w+", re.UNICODE)
+@@ -68,7 +77,14 @@ def parse_chat_file(filepath, encoding="utf-8"):
+                     cur["text"] += "\n"
+                 continue
+ 
+-            m = MSG_RE.match(line)
++            # A "[SYSTEM]" line is an event even if its text contains ": "
++            # (e.g. "[SYSTEM] X changed the description: hi") -- it must
++            # not be mistaken for a message from a person called "[SYSTEM] X
++            # changed the description".
++            dm = DATE_PREFIX_RE.match(line)
++            is_system_line = bool(dm) and line[dm.end():].startswith(_SYSTEM_MARKER)
++
++            m = None if is_system_line else MSG_RE.match(line)
+             if m:
+                 if cur is not None:
+                     records.append(cur)
+@@ -82,7 +98,6 @@ def parse_chat_file(filepath, encoding="utf-8"):
+                 }
+                 continue
+ 
+-            dm = DATE_PREFIX_RE.match(line)
+             if dm:
+                 if cur is not None:
+                     records.append(cur)
+@@ -152,12 +167,16 @@ def build_dataframe(records):
+     df["char_count"] = df["analysis_text"].str.len()
+     df["word_count"] = df["analysis_text"].apply(lambda t: len(WORD_RE.findall(t)))
+ 
+-    df = df.sort_values("timestamp").reset_index(drop=True)
++    # kind="stable": messages sent in the same minute must keep their archive
++    # order. The default (quicksort) shuffles ties, which scrambles
++    # double-texting, reply-gap and first/last-seen calculations.
++    df = df.sort_values("timestamp", kind="stable").reset_index(drop=True)
+     return df
+ 
+ 
+ def _text_for_analysis(text):
+     """Remove export placeholders from analysis without changing source text."""
++    text = _ISOLATES_RE.sub("", text)
+     text = MEDIA_RE.sub(" ", text)
+     text = FORWARDED_RE.sub(" ", text)
+     text = WAITING_RE.sub(" ", text)
+@@ -173,4 +192,6 @@ def get_participants(df, min_messages=1):
+ 
+ 
+ def tokenize(text):
+-    return [w.strip("'").lower() for w in WORD_RE.findall(text) if w.strip("'")]
++    # Curly apostrophes (iPhone keyboards) are folded to straight ones so
++    # "don’t" and "don't" are the same word.
++    return [w.replace("’", "'").lower() for w in WORD_RE.findall(text)]
+diff --git a/Pipeline/Tools/chat_analyzer/search_export.py b/Pipeline/Tools/chat_analyzer/search_export.py
+index 361417c..39cc81c 100644
+--- a/Pipeline/Tools/chat_analyzer/search_export.py
++++ b/Pipeline/Tools/chat_analyzer/search_export.py
+@@ -8,7 +8,7 @@ import json
+ 
+ 
+ def build_search_data(df, participants, individual_stats, overall, timedist):
+-    real = df[(~df["is_system"]) & (df["is_real_text"] | df["is_media"] | df["is_deleted"])].sort_values("timestamp")
++    real = df[(~df["is_system"]) & (df["is_real_text"] | df["is_media"] | df["is_deleted"])].sort_values("timestamp", kind="stable")
+ 
+     sender_index = {p: i for i, p in enumerate(participants)}
+     timestamps = []
+diff --git a/Pipeline/Tools/chat_analyzer/stats_engine.py b/Pipeline/Tools/chat_analyzer/stats_engine.py
+index 01f4cc7..d5497d8 100644
+--- a/Pipeline/Tools/chat_analyzer/stats_engine.py
++++ b/Pipeline/Tools/chat_analyzer/stats_engine.py
+@@ -6,7 +6,7 @@ PDF, and search-JSON builders.
+ """
+ import re
+ from collections import Counter, defaultdict
+-from datetime import datetime, timedelta
++from datetime import timedelta
+ 
+ import numpy as np
+ import pandas as pd
+@@ -139,7 +139,7 @@ def compute_overall(df):
+     gap_end_ts = ts_sorted.loc[top_gap_idx[0]] if len(top_gap_idx) else None
+     gap_start_ts = ts_sorted.loc[top_gap_idx[0] - 1] if len(top_gap_idx) else None
+ 
+-    reply_rows = real.sort_values("timestamp").reset_index(drop=True)
++    reply_rows = real.sort_values("timestamp", kind="stable").reset_index(drop=True)
+     reply_gaps = reply_rows["timestamp"].diff().dt.total_seconds()
+     same_sender = reply_rows["sender"].eq(reply_rows["sender"].shift())
+     msg_gaps = reply_gaps.where((~same_sender) & (reply_gaps > 0)).dropna()
+@@ -157,7 +157,7 @@ def compute_overall(df):
+ 
+     # top 3 quickest replies: smallest gap between two messages from
+     # DIFFERENT senders (a same-sender gap is a double-text, not a reply)
+-    real_sorted = real.sort_values("timestamp").reset_index(drop=True)
++    real_sorted = real.sort_values("timestamp", kind="stable").reset_index(drop=True)
+     top3_quickest_replies = []
+     if len(real_sorted) > 1:
+         gap_secs = real_sorted["timestamp"].diff().dt.total_seconds()
+@@ -252,7 +252,7 @@ def compute_individual_stats(df, participants, total_days, aliases=None):
+     mention_given, mention_received, mention_pairs = _compute_mentions(real, participants, aliases)
+ 
+     # single-pass computation of double-texting & conversation-starts for everyone
+-    real_sorted_all = real.sort_values("timestamp")
++    real_sorted_all = real.sort_values("timestamp", kind="stable")
+     senders_seq = real_sorted_all["sender"].tolist()
+     ts_seq = real_sorted_all["timestamp"].tolist()
+     gap_thresh = timedelta(hours=cfg.CONVERSATION_GAP_HOURS)
+@@ -268,10 +268,11 @@ def compute_individual_stats(df, participants, total_days, aliases=None):
+         mine = real[real["sender"] == person]
+         text_mine = mine[mine["is_real_text"]]
+         all_text = " ".join(text_mine["lexical_text"].tolist())
+-        # _clean_for_wordphrase strips "@tag" mentions before tokenizing,
+-        # since a tag isn't vocabulary — otherwise "@Sarah" would inflate
+-        # someone's vocabulary/word-count stats with everyone else's names.
+-        tokens = tokenize(_clean_for_wordphrase(all_text))
++        # lexical_text already has @tag mentions stripped (see
++        # prepare_lexical_text), since a tag isn't vocabulary — otherwise
++        # "@Sarah" would inflate someone's vocabulary/word-count stats with
++        # everyone else's names.
++        tokens = tokenize(all_text)
+         vocab = set(tokens)
+ 
+         n_msgs = len(mine)
+@@ -365,28 +366,50 @@ def compute_individual_stats(df, participants, total_days, aliases=None):
+     return out, mention_pairs
+ 
+ 
++def _unique_targets(targets_by_variant):
++    """Variants that point at exactly one person; a variant claimed by
++    several people is ambiguous and deliberately not attributed."""
++    return {v: next(iter(t)) for v, t in targets_by_variant.items() if v and len(t) == 1}
++
++
+ def _compile_mention_patterns(participants, aliases=None):
+-    variant_targets = defaultdict(set)
++    """Compiles the regex that recognizes "@Name" tags of known people,
++    and the {casefolded name: canonical participant} lookup for it.
++
++    Two tiers of names: EXACT ones (full participant names and identities.json
++    aliases) and DERIVED ones (a participant's first name). An exact name
++    always beats a derived one, so "@Abdullah" is the participant called
++    Abdullah even though it's also the first name of "Abdullah Hanif"; a
++    first name shared only between derived names (Ahmed N. / Ahmed T.)
++    stays ambiguous and unattributed."""
++    exact, derived = defaultdict(set), defaultdict(set)
+     for p in participants:
+-        variant_targets[p.casefold()].add(p)
++        exact[p.casefold()].add(p)
+         first = p.split()[0]
+         if first != p:
+-            variant_targets[first.casefold()].add(p)
++            derived[first.casefold()].add(p)
+     for alias, canonical in (aliases or {}).items():
+         if "@" not in alias:
+-            variant_targets[alias.strip().casefold()].add(canonical)
+-    # Ambiguous aliases or first names are deliberately not attributed.
+-    variants = [(variant, next(iter(targets)))
+-                for variant, targets in variant_targets.items()
+-                if variant and len(targets) == 1]
+-    variants.sort(key=lambda x: -len(x[0]))
+-    alt = "|".join(re.escape(v) for v, _ in variants)
+-    if not alt:
++            exact[alias.strip().casefold()].add(canonical)
++
++    lookup = _unique_targets(derived)
++    lookup.update({v: t for v, t in _unique_targets(exact).items()})
++    # A name that is ambiguous among EXACT names must not fall back to a
++    # derived guess either.
++    for v, t in exact.items():
++        if len(t) > 1:
++            lookup.pop(v, None)
++
++    variants = sorted(lookup, key=len, reverse=True)
++    if not variants:
+         return re.compile(r"(?!)"), {}
+-    pattern = re.compile(r"@(" + alt + r")(?![\w@'-])", re.I | re.UNICODE)
+-    lookup = {}
+-    for v, canon in variants:
+-        lookup[v] = canon
++    alt = "|".join(re.escape(v) for v in variants)
++    # Not preceded by a word char/@ (so "me@Omar" isn't a tag); not followed
++    # by more name characters. A possessive "'s" and trailing punctuation are
++    # fine ("@Omar's", "@Omar-"), but "@Omar-ish"/"@Omar'x" aren't Omar.
++    pattern = re.compile(
++        r"(?<![\w@])@(" + alt + r")(?![\w@]|-\w|'(?!s\b))", re.I | re.UNICODE
++    )
+     return pattern, lookup
+ 
+ 
+diff --git a/Pipeline/omar_identities.py b/Pipeline/omar_identities.py
+new file mode 100644
+index 0000000..8dabc23
+--- /dev/null
++++ b/Pipeline/omar_identities.py
+@@ -0,0 +1,64 @@
++"""
++omar_identities.py -- identity/alias helpers shared by the archive pipeline
++(scripts/) and the analyzer (Tools/chat_analyzer/).
++
++Both sides need to agree on what "the same alias" means, so the key
++function and the alias-map builder live here instead of being re-derived
++(slightly differently) in each place.
++"""
++import re
++import unicodedata
++
++# Unicode directional isolates. WhatsApp wraps the contact name in an
++# @-mention like "@<FSI>Name<PDI>". They're invisible, but they're what
++# lets a mention label contain spaces, so they have to survive parsing
++# until mentions are resolved -- see common.resolve_mentions().
++FSI = "\u2068"
++PDI = "\u2069"
++ISOLATE_CHARS_RE = re.compile("[\u2066-\u2069]")
++
++# WhatsApp prefixes the label of someone who isn't a saved contact with
++# "~" plus a (narrow) no-break space.
++_NON_CONTACT_PREFIX_RE = re.compile(r"^~[\s\u202f\u00a0]*")
++# Emoji variation selectors: "❤" and "❤️" are the same label to a human.
++_VARIATION_SELECTORS_RE = re.compile("[\ufe0e\ufe0f]")
++
++
++def strip_isolates(text):
++    return ISOLATE_CHARS_RE.sub("", text)
++
++
++def alias_key(label):
++    """Canonical lookup key for a sender label / alias / mention label:
++    isolates, variation selectors and the non-contact "~ " prefix removed,
++    NFKC-normalized, casefolded. Every alias_map lookup goes through this
++    so "Akifa❤️" == "akifa❤" and "AKIF BIN ATIF" == "Akif Bin Atif"."""
++    label = strip_isolates(label)
++    label = _VARIATION_SELECTORS_RE.sub("", label)
++    label = _NON_CONTACT_PREFIX_RE.sub("", label.strip())
++    return unicodedata.normalize("NFKC", label).strip().casefold()
++
++
++def build_alias_map(data):
++    """Builds {alias_key: canonical_name} from a loaded identities.json
++    dict. Every canonical name is an implicit alias of itself, so an
++    already-normalized file (whose senders are canonical names) resolves
++    without each name being listed in its own alias list.
++
++    Returns (alias_map, conflicts). `conflicts` maps every key claimed by
++    more than one DIFFERENT identity to the set of names claiming it. The
++    alias_map keeps the first claimant for those keys; callers that would
++    rather not guess (the analyzer) can drop the conflicting keys."""
++    claims = {}
++    for person in data.get("identities", []):
++        canonical = person["name"]
++        for label in [canonical, *person.get("aliases", [])]:
++            key = alias_key(label)
++            if key:
++                claims.setdefault(key, {})[canonical] = True
++    alias_map, conflicts = {}, {}
++    for key, names in claims.items():
++        alias_map[key] = next(iter(names))
++        if len(names) > 1:
++            conflicts[key] = set(names)
++    return alias_map, conflicts
+diff --git a/Pipeline/scripts/common.py b/Pipeline/scripts/common.py
+index 90b7ad6..329b95b 100644
+--- a/Pipeline/scripts/common.py
++++ b/Pipeline/scripts/common.py
+@@ -7,8 +7,15 @@ If your exports don't parse correctly, this is the file to fix — see
+ "If the parser doesn't match an export" in Pipeline/TECHNICAL.md.
+ """
+ import re
++import sys
+ import json
+ from datetime import datetime
++from pathlib import Path
++
++sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # Pipeline/
++from omar_identities import (  # noqa: E402
++    FSI, PDI, alias_key, build_alias_map, strip_isolates,
++)
+ 
+ # ---------------------------------------------------------------------------
+ # CONFIG — adjust if your WhatsApp export format differs
+@@ -99,7 +106,23 @@ PLACEHOLDER_PATTERNS = [
+ 
+ # WhatsApp sometimes inserts invisible direction-marker characters around
+ # the " - " separator, which breaks the regexes above if not stripped.
+-INVISIBLE_CHARS = ['\u200e', '\u200f', '\ufeff']
++# The directional ISOLATES (U+2066-U+2069) are deliberately NOT in this
++# list: WhatsApp wraps @-mention labels in U+2068/U+2069, and
++# resolve_mentions() needs them to know where a multi-word label ends.
++# They're stripped there, once the mentions have been resolved.
++INVISIBLE_CHARS = ['\u200e', '\u200f', '\ufeff',
++                   '\u202a', '\u202b', '\u202c', '\u202d', '\u202e']
++
++# A "sender" label that is really the start of a system event whose text
++# happens to contain ": " (e.g. "Omar changed the group description: hi").
++# Real contact names basically never contain these verbs, so a label that
++# does is treated as event text, not as a person.
++_SYSTEM_EVENT_LABEL_RE = re.compile(
++    r"\s(?:changed|added|removed|joined|created|deleted|pinned|unpinned|"
++    r"turned|updated|reset|invited|was added|were added)\b"
++    r"|^(?:you|messages and calls)\b.*\b(?:changed|added|removed|created|encrypted)\b",
++    re.I,
++)
+ 
+ # Output date/time format, applied consistently to every parsed message
+ # regardless of which source format it came from — DD-Mon-YYYY avoids the
+@@ -271,6 +294,39 @@ def _day_month_values(date_str):
+     return a, b
+ 
+ 
++def _date_order_evidence(path):
++    """Scans EVERY dated line of a raw export and returns
++    (day_first_lines, month_first_lines, ambiguous_lines): how many lines
++    prove day-first, prove month-first, or fit both readings."""
++    day_first = month_first = ambiguous = 0
++    pats = [pat['regex'] for pat in MSG_LINE_PATTERNS + EVENT_LINE_PATTERNS]
++    with open(path, 'r', encoding='utf-8', errors='replace') as f:
++        for raw_line in f:
++            line = clean_line(raw_line)
++            # First matching pattern wins -- the same priority parse_export
++            # uses, so a message body can't be mistaken for a date line.
++            m = next((mm for mm in (rx.match(line) for rx in pats) if mm), None)
++            vals = _day_month_values(m.group('date')) if m else None
++            if not vals:
++                continue
++            a_val, b_val = vals
++            if a_val > 12 and b_val <= 12:
++                day_first += 1
++            elif b_val > 12 and a_val <= 12:
++                month_first += 1
++            else:
++                ambiguous += 1
++    return day_first, month_first, ambiguous
++
++
++def _order_from_evidence(day_first, month_first):
++    if day_first and not month_first:
++        return True
++    if month_first and not day_first:
++        return False
++    return None
++
++
+ def detect_date_order(path):
+     """Looks at EVERY dated line in a raw export and works out, once for
+     the whole file, whether it writes dates day-first (13/12/2024) or
+@@ -284,28 +340,8 @@ def detect_date_order(path):
+     (month-first), or None when the file gives no evidence (every date
+     is ambiguous) or contradicts itself -- callers then fall back to the
+     per-pattern defaults, exactly as before."""
+-    day_first_evidence = month_first_evidence = 0
+-    pats = [pat['regex'] for pat in MSG_LINE_PATTERNS + EVENT_LINE_PATTERNS]
+-    with open(path, 'r', encoding='utf-8', errors='replace') as f:
+-        for raw_line in f:
+-            line = clean_line(raw_line)
+-            for rx in pats:
+-                m = rx.match(line)
+-                if not m:
+-                    continue
+-                vals = _day_month_values(m.group('date'))
+-                if vals:
+-                    a, b = vals
+-                    if a > 12 and b <= 12:
+-                        day_first_evidence += 1
+-                    elif b > 12 and a <= 12:
+-                        month_first_evidence += 1
+-                break
+-    if day_first_evidence and not month_first_evidence:
+-        return True
+-    if month_first_evidence and not day_first_evidence:
+-        return False
+-    return None
++    day_first, month_first, _ = _date_order_evidence(path)
++    return _order_from_evidence(day_first, month_first)
+ 
+ 
+ def normalize_date(raw_date, prefer_day_first=True):
+@@ -337,27 +373,56 @@ def normalize_time(raw_time):
+     return raw_time
+ 
+ 
+-# In-message @mentions look like "@923001234567" — an @ followed by a
+-# phone number, with no "@s.whatsapp.net"/"@lid" suffix in the visible
+-# text (that suffix only appears in identities.json aliases). 7-15 digits
+-# covers real phone numbers while avoiding false positives on short
++# In-message @mentions come in two shapes:
++#   "@923001234567"            -- a bare phone/LID number (msgstore.db
++#                                 extractions, and exports of people who
++#                                 aren't saved contacts), and
++#   "@<FSI>Contact Name<PDI>"  -- the contact's name as saved on the
++#                                 exporting phone, wrapped in invisible
++#                                 directional isolates (text exports).
++# The number form carries no "@s.whatsapp.net"/"@lid" suffix in the visible
++# text (the suffix only appears in identities.json aliases). 7-20 digits
++# covers real phone numbers/LIDs while avoiding false positives on short
+ # numbers like years.
+-MENTION_RE = re.compile(r'@(\d{7,15})\b')
+-
+-
+-def resolve_mentions(text, alias_map):
+-    """Replaces any @<number> mention in text with @<CanonicalName> if the
+-    number matches a known alias — tried as "<number>@s.whatsapp.net",
+-    "<number>@lid", or a bare "<number>" alias, in that order. Anything
+-    that doesn't match a known alias is left exactly as it was — never
+-    guessed, never dropped."""
++MENTION_RE = re.compile(
++    rf'(?<![\w@])@(?:{FSI}(?P<label>[^{PDI}\n]*){PDI}|(?P<digits>\d{{7,20}})\b)'
++)
++_NUMBER_SUFFIXES = ('@s.whatsapp.net', '@lid', '@bot', '')
++
++
++def _lookup_mention(label, alias_map):
++    """Canonical name for a mention label (a contact name, a formatted
++    phone number like "+966 58 371 5010", or bare digits), or None."""
++    candidates = [alias_key(label)]
++    digits = re.sub(r'\D', '', label)
++    if len(digits) >= 7 and not re.search(r'[^\d\s+()-]', label):
++        candidates += [alias_key(digits + suffix) for suffix in _NUMBER_SUFFIXES]
++    return next((alias_map[c] for c in candidates if c in alias_map), None)
++
++
++def resolve_mentions(text, alias_map, unresolved=None):
++    """Replaces every @-mention in text with @<CanonicalName> when its
++    label/number matches a known alias in `alias_map` (keys as produced by
++    omar_identities.alias_key). Mentions that match nothing keep their
++    label -- never guessed, never dropped -- but lose their invisible
++    isolate wrappers, so the same message exported from two phones differs
++    only by contact name rather than by hidden characters. Any stray
++    isolate characters elsewhere in the text are removed too.
++
++    `unresolved`: optional Counter; every label that couldn't be resolved
++    is tallied in it so the caller can tell the user which aliases to add.
++    """
+     def repl(match):
+-        digits = match.group(1)
+-        for candidate in (f"{digits}@s.whatsapp.net", f"{digits}@lid", digits):
+-            if candidate in alias_map:
+-                return f"@{alias_map[candidate]}"
+-        return match.group(0)
+-    return MENTION_RE.sub(repl, text)
++        label = match.group('label')
++        if label is None:
++            label = match.group('digits')
++        canonical = _lookup_mention(label, alias_map) if label.strip() else None
++        if canonical is not None:
++            return f"@{canonical}"
++        if unresolved is not None and label.strip():
++            unresolved[label.strip()] += 1
++        return f"@{label}"
++    return strip_isolates(MENTION_RE.sub(repl, text))
+ 
+ 
+ def clean_line(line):
+@@ -378,20 +443,42 @@ def is_placeholder_msg(msg_text):
+ 
+ def load_identities(path):
+     """Returns (full_json_data, alias_map) where alias_map maps
+-    lowercased alias -> canonical name, for fast lookup."""
++    omar_identities.alias_key(alias) -> canonical name, for fast lookup.
++    Canonical names are implicit aliases of themselves. An alias claimed
++    by two different identities is reported on stderr (the first claimant
++    wins) instead of one silently overwriting the other."""
++    path = Path(path)
+     if not path.exists():
+         data = {"identities": []}
+     else:
+         with open(path, 'r', encoding='utf-8') as f:
+             data = json.load(f)
+-    alias_map = {}
+-    for person in data.get('identities', []):
+-        canonical = person['name']
+-        for alias in person.get('aliases', []):
+-            alias_map[alias.strip().lower()] = canonical
++    alias_map, conflicts = build_alias_map(data)
++    for key, names in sorted(conflicts.items()):
++        print(f"WARNING: alias '{key}' is claimed by more than one identity "
++              f"({', '.join(sorted(names))}); using '{alias_map[key]}'. "
++              f"Fix identities.json.", file=sys.stderr)
+     return data, alias_map
+ 
+ 
++def assign_alias(data, alias_map, label, choice):
++    """Records `label` as an alias of the identity named `choice` (matched
++    case-insensitively), creating that identity if it doesn't exist yet.
++    Updates both `data` (to be saved) and `alias_map` (for lookups) and
++    returns the canonical name. Shared by normalize_export.py and
++    extract_identities.py so the two prompts can't drift apart."""
++    label = label.strip()
++    existing = next((p for p in data['identities']
++                     if p['name'].lower() == choice.lower()), None)
++    if existing is None:
++        existing = {"name": choice, "aliases": []}
++        data['identities'].append(existing)
++    if label not in existing['aliases']:
++        existing['aliases'].append(label)
++    alias_map[alias_key(label)] = existing['name']
++    return existing['name']
++
++
+ def save_identities(data, path):
+     with open(path, 'w', encoding='utf-8') as f:
+         json.dump(data, f, indent=2, ensure_ascii=False)
+@@ -418,6 +505,20 @@ def warn_if_suspicious(path, messages, raw_line_count):
+               f"That's a low match rate — worth spot-checking the output. ***\n")
+ 
+ 
++def _match_line(line, patterns):
++    """First pattern in `patterns` that matches `line`, as (pattern, match),
++    or (None, None)."""
++    for pat in patterns:
++        m = pat['regex'].match(line)
++        if m:
++            return pat, m
++    return None, None
++
++
++def _looks_like_system_event(sender_label):
++    return bool(_SYSTEM_EVENT_LABEL_RE.search(sender_label))
++
++
+ def parse_export(path, day_first=None):
+     """
+     Parses a raw WhatsApp .txt export (or a msgstore.db extraction) into
+@@ -426,67 +527,77 @@ def parse_export(path, day_first=None):
+     unparsed is True for a line that matched no known pattern and also
+     wasn't a continuation of an in-progress message — these are kept
+     verbatim rather than dropped; nothing is ever silently discarded.
+-    Multi-line messages (message bodies containing literal newlines) are
+-    reassembled into a single entry.
++    Multi-line messages (message bodies containing literal newlines,
++    including blank lines between paragraphs) are reassembled into a
++    single entry.
+ 
+     day_first: how to read ambiguous dates like 04/08/2024. Left as None
+     (the default), it's worked out once per FILE by detect_date_order(),
+     so a single unambiguous line like 13/12/2024 settles every ambiguous
+     one in the same export. If the file gives no evidence either way,
+-    each line pattern's own default applies, as before.
++    each line pattern's own default applies, as before (with a warning if
++    the file actually contained ambiguous dates, since then that default
++    is a guess).
+     """
+     messages = []
+     current = None
++    pending_blank_lines = 0  # blank lines seen since `current`'s last text
++
+     if day_first is None:
+-        day_first = detect_date_order(path)
++        df_lines, mf_lines, ambiguous_lines = _date_order_evidence(path)
++        day_first = _order_from_evidence(df_lines, mf_lines)
++        if day_first is None and ambiguous_lines:
++            print(f"WARNING: {path}: {ambiguous_lines} date(s) could be day-first "
++                  f"or month-first and nothing in the file settles it; assuming "
++                  f"day-first. If that's wrong, every such date is silently "
++                  f"swapped.", file=sys.stderr)
++
++    def start_entry(pat, m, sender, msg):
++        nonlocal current, pending_blank_lines
++        if current:
++            messages.append(current)
++        current = {
++            'date': normalize_date(m.group('date'),
++                                   pat['prefer_day_first'] if day_first is None else day_first),
++            'time': normalize_time(m.group('time')),
++            'sender': sender,
++            'msg': msg.strip(),
++            'unparsed': False,
++        }
++        pending_blank_lines = 0
+ 
+     with open(path, 'r', encoding='utf-8', errors='replace') as f:
+         for raw_line in f:
+             line = clean_line(raw_line)
+             if not line.strip():
++                # A blank line is only kept if more text follows it inside
++                # the same message (a paragraph break); blanks between two
++                # messages, or at the end of the file, are just spacing.
++                if current:
++                    pending_blank_lines += 1
+                 continue
+ 
+-            matched = False
+-            for pat in MSG_LINE_PATTERNS:
+-                m = pat['regex'].match(line)
+-                if m:
+-                    if current:
+-                        messages.append(current)
+-                    current = {
+-                        'date': normalize_date(m.group('date'),
+-                                       pat['prefer_day_first'] if day_first is None else day_first),
+-                        'time': normalize_time(m.group('time')),
+-                        'sender': m.group('sender').strip(),
+-                        'msg': m.group('msg').strip(),
+-                        'unparsed': False,
+-                    }
+-                    matched = True
+-                    break
+-            if matched:
++            pat, m = _match_line(line, MSG_LINE_PATTERNS)
++            if m and _looks_like_system_event(m.group('sender')):
++                # e.g. "Omar changed the group description: hi" -- the
++                # ": " made it look like "sender: message". It's an event
++                # whose text is the whole remainder of the line.
++                start_entry(pat, m, None, f"{m.group('sender')}: {m.group('msg')}")
++                continue
++            if m:
++                start_entry(pat, m, m.group('sender').strip(), m.group('msg'))
+                 continue
+ 
+-            for pat in EVENT_LINE_PATTERNS:
+-                m = pat['regex'].match(line)
+-                if m:
+-                    if current:
+-                        messages.append(current)
+-                    current = {
+-                        'date': normalize_date(m.group('date'),
+-                                       pat['prefer_day_first'] if day_first is None else day_first),
+-                        'time': normalize_time(m.group('time')),
+-                        'sender': None,
+-                        'msg': m.group('event').strip(),
+-                        'unparsed': False,
+-                    }
+-                    matched = True
+-                    break
+-            if matched:
++            pat, m = _match_line(line, EVENT_LINE_PATTERNS)
++            if m:
++                start_entry(pat, m, None, m.group('event'))
+                 continue
+ 
+             # Not a new timestamped line -> continuation of the previous
+             # (multi-line) message.
+             if current:
+-                current['msg'] += '\n' + line
++                current['msg'] += '\n' * (pending_blank_lines + 1) + line
++                pending_blank_lines = 0
+             else:
+                 # A line that matches nothing AND isn't a continuation of
+                 # anything — e.g. junk at the very top of the file, or a
+@@ -501,8 +612,8 @@ def parse_export(path, day_first=None):
+                     'unparsed': True,
+                 })
+ 
+-        if current:
+-            messages.append(current)
++    if current:
++        messages.append(current)
+ 
+     return messages
+ 
+@@ -575,13 +686,18 @@ def parse_normalized_blocks(path):
+     if not path.exists():
+         return blocks
+ 
++    pending_blank_lines = 0  # blank lines since the current block's last text
+     with open(path, 'r', encoding='utf-8', errors='replace') as f:
+         for raw_line in f:
+             line = raw_line.rstrip('\n')
+             if not line.strip():
++                # Kept only if more text follows inside the same message
++                # (a paragraph break); see parse_export.
++                pending_blank_lines += 1
+                 continue
+             m = ARCHIVE_LINE_RE.match(line)
+             if m:
++                pending_blank_lines = 0
+                 flush()
+                 try:
+                     dt = datetime.strptime(f"{m.group('date')} {m.group('time')}", _ARCHIVE_DT_FMT)
+@@ -590,7 +706,9 @@ def parse_normalized_blocks(path):
+                 current_lines = [line]
+                 current_dt = dt
+             elif current_lines is not None:
++                current_lines.extend([''] * pending_blank_lines)
+                 current_lines.append(line)
++                pending_blank_lines = 0
+             else:
+                 # A standalone line with no date/time prefix at all and
+                 # nothing before it to attach to (e.g. a genuine
+diff --git a/Pipeline/scripts/extract_identities.py b/Pipeline/scripts/extract_identities.py
+index 9fb5b7e..1376420 100644
+--- a/Pipeline/scripts/extract_identities.py
++++ b/Pipeline/scripts/extract_identities.py
+@@ -16,10 +16,37 @@ Usage:
+     python extract_identities.py <data dir>/Raw_Exports/00_initial_port.txt
+ """
+ import sys
++from collections import Counter
+ from pathlib import Path
++
+ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+ import omar_paths  # noqa: E402
+-from common import parse_export, load_identities, save_identities, warn_if_suspicious  # noqa: E402
++from omar_identities import alias_key, strip_isolates  # noqa: E402
++from common import (  # noqa: E402
++    parse_export, load_identities, save_identities, warn_if_suspicious, assign_alias,
++)
++
++
++def collect_unknown_senders(filepaths, alias_map):
++    """{label: message count} for every sender label in the given raw
++    exports that alias_map doesn't know. Labels that differ only in
++    case/emoji-variation/'~ ' prefix are one label (the first spelling
++    seen), since they resolve identically."""
++    unknown = Counter()
++    spelling = {}  # alias_key -> first spelling seen
++    for filepath in filepaths:
++        with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
++            raw_line_count = sum(1 for line in f if line.strip())
++        messages = parse_export(filepath)
++        warn_if_suspicious(filepath, messages, raw_line_count)
++        for msg in messages:
++            if msg['sender'] is None:
++                continue
++            label = strip_isolates(msg['sender']).strip()
++            key = alias_key(label)
++            if key not in alias_map:
++                unknown[spelling.setdefault(key, label)] += 1
++    return unknown
+ 
+ 
+ def main():
+@@ -28,25 +55,12 @@ def main():
+         sys.exit(1)
+ 
+     try:
+-        IDENTITIES_PATH = omar_paths.require_paths().identities
++        identities_path = omar_paths.require_paths().identities
+     except omar_paths.DataDirError as e:
+         sys.exit(str(e))
+-    data, alias_map = load_identities(IDENTITIES_PATH)
+-
+-    unknown = {}
+-    for filepath in sys.argv[1:]:
+-        with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+-            raw_line_count = sum(1 for l in f if l.strip())
+-        messages = parse_export(filepath)
+-        warn_if_suspicious(filepath, messages, raw_line_count)
+-        for msg in messages:
+-            sender = msg['sender']
+-            if sender is None:
+-                continue
+-            key = sender.strip().lower()
+-            if key not in alias_map:
+-                unknown[sender.strip()] = unknown.get(sender.strip(), 0) + 1
++    data, alias_map = load_identities(identities_path)
+ 
++    unknown = collect_unknown_senders(sys.argv[1:], alias_map)
+     if not unknown:
+         print("No unknown senders found — identities.json already covers everyone in these files.")
+         return
+@@ -54,32 +68,30 @@ def main():
+     print(f"Found {len(unknown)} unrecognized sender label(s). Going through them, "
+           f"most frequent first.\n")
+ 
+-    for sender, count in sorted(unknown.items(), key=lambda x: -x[1]):
++    for sender, count in unknown.most_common():
+         names_list = [p['name'] for p in data['identities']]
+         print(f"\n--- '{sender}'  (appears {count} times) ---")
+         if names_list:
+             print("Existing identities: " + ", ".join(names_list))
+-        choice = input(
+-            "Type an EXISTING name to add this as an alias, "
+-            "a NEW name to create a new identity, "
+-            "or just press Enter to skip for now: "
+-        ).strip()
++        try:
++            choice = input(
++                "Type an EXISTING name to add this as an alias, "
++                "a NEW name to create a new identity, "
++                "or just press Enter to skip for now: "
++            ).strip()
++        except EOFError:
++            choice = ""
+ 
+         if not choice:
+             print("Skipped (will show up again next time you run this).")
+             continue
+ 
+-        existing = next((p for p in data['identities'] if p['name'].lower() == choice.lower()), None)
+-        if existing:
+-            existing['aliases'].append(sender)
+-            alias_map[sender.lower()] = existing['name']
+-            print(f"Added '{sender}' as an alias of {existing['name']}.")
+-        else:
+-            data['identities'].append({"name": choice, "aliases": [sender]})
+-            alias_map[sender.lower()] = choice
+-            print(f"Created new identity '{choice}' with alias '{sender}'.")
+-
+-        save_identities(data, IDENTITIES_PATH)  # save after every answer, no lost progress
++        is_new = not any(p['name'].lower() == choice.lower() for p in data['identities'])
++        canonical = assign_alias(data, alias_map, sender, choice)
++        print(f"Created new identity '{canonical}' with alias '{sender}'." if is_new
++              else f"Added '{sender}' as an alias of {canonical}.")
++
++        save_identities(data, identities_path)  # save after every answer, no lost progress
+ 
+     print(f"\nDone. identities.json now has {len(data['identities'])} identities.")
+ 
+diff --git a/Pipeline/scripts/merge_export.py b/Pipeline/scripts/merge_export.py
+index 85f5437..564f813 100644
+--- a/Pipeline/scripts/merge_export.py
++++ b/Pipeline/scripts/merge_export.py
+@@ -259,10 +259,10 @@ def main():
+         paths = omar_paths.require_paths()
+     except omar_paths.DataDirError as e:
+         sys.exit(str(e))
+-    ARCHIVE_PATH = paths.archive
++    archive_path = paths.archive
+     new_sha = file_sha256(new_path)
+ 
+-    archive_blocks = parse_normalized_blocks(ARCHIVE_PATH)
++    archive_blocks = parse_normalized_blocks(archive_path)
+     new_blocks = parse_normalized_blocks(new_path)
+ 
+     if not new_blocks:
+@@ -273,10 +273,10 @@ def main():
+         # First-ever merge: the archive doesn't exist yet, so there's
+         # nothing to compare against or insert relative to — the new
+         # file becomes the whole archive, exactly as it is.
+-        write_atomic(ARCHIVE_PATH, '\n'.join(b['text'] for b in new_blocks) + '\n')
++        write_atomic(archive_path, '\n'.join(b['text'] for b in new_blocks) + '\n')
+         write_log(paths.merge_log, new_path.name, new_sha, len(new_blocks), 0, 0,
+                   "archive was empty (first merge)")
+-        print(f"Created {ARCHIVE_PATH} with {len(new_blocks)} line(s).")
++        print(f"Created {archive_path} with {len(new_blocks)} line(s).")
+         return
+ 
+     a_leading, a_dated = decompose(archive_blocks)
+@@ -320,7 +320,7 @@ def main():
+ 
+     lines = render(a_leading, merged_dated, appendix)
+ 
+-    write_atomic(ARCHIVE_PATH, '\n'.join(lines) + '\n')
++    write_atomic(archive_path, '\n'.join(lines) + '\n')
+ 
+     notes = []
+     if appendix:
+@@ -337,7 +337,7 @@ def main():
+               skipped_placeholder, note)
+ 
+     total_skipped = skipped_dup + skipped_placeholder
+-    print(f"Merged {new_path.name} into {ARCHIVE_PATH}")
++    print(f"Merged {new_path.name} into {archive_path}")
+     print(f"  {added} new message(s) added, {total_skipped} already-present message(s) skipped "
+           f"({skipped_dup} exact duplicate, {skipped_placeholder} placeholder superseded by archive).")
+     if note:
+diff --git a/Pipeline/scripts/normalize_export.py b/Pipeline/scripts/normalize_export.py
+index 6efc9fe..adb2b70 100644
+--- a/Pipeline/scripts/normalize_export.py
++++ b/Pipeline/scripts/normalize_export.py
+@@ -9,7 +9,8 @@ Nothing is deleted. Media placeholders (<Media omitted> etc.), deleted-
+ message notices, missed-call notices, system/group events, and anything
+ in an unrecognized format are all kept in the output — recognized cases
+ just get counted separately in the summary so you know they're there.
+-Only genuinely blank lines are skipped.
++Only blank lines between messages are skipped (a blank line inside a
++multi-paragraph message is part of that message and is kept).
+ 
+ Any sender label not yet known in identities.json will be asked about
+ right there in the terminal, and identities.json is updated immediately
+@@ -23,18 +24,35 @@ Output:
+     <data dir>/normalized_exports/2026-09_normalized.txt
+ """
+ import sys
++from collections import Counter
++from dataclasses import dataclass, field
+ from pathlib import Path
+ 
+ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+ import omar_paths  # noqa: E402
++from omar_identities import alias_key, strip_isolates  # noqa: E402
+ from common import (  # noqa: E402
+     parse_export, load_identities, save_identities, is_media_or_deleted,
+-    warn_if_suspicious, resolve_mentions,
++    warn_if_suspicious, resolve_mentions, assign_alias,
+ )
+ 
++UNRESOLVED_TAG = "[UNRESOLVED]"
+ 
+-def resolve_sender(sender, data, alias_map, skipped_cache):
+-    key = sender.strip().lower()
++
++@dataclass
++class NormalizeResult:
++    lines: list = field(default_factory=list)
++    media_count: int = 0
++    unparsed_count: int = 0
++    unresolved_mentions: Counter = field(default_factory=Counter)
++
++
++def resolve_sender(sender, data, alias_map, skipped_cache, identities_path):
++    """Canonical name for a raw sender label, asking in the terminal about
++    labels identities.json doesn't know yet. Every answer is written to
++    identities.json immediately, so stopping partway never loses progress."""
++    label = strip_isolates(sender).strip()
++    key = alias_key(label)
+     if key in alias_map:
+         return alias_map[key]
+     if key in skipped_cache:
+@@ -43,29 +61,56 @@ def resolve_sender(sender, data, alias_map, skipped_cache):
+         # the same person in the same file.
+         return skipped_cache[key]
+ 
+-    print(f"\nUnrecognized sender label: '{sender}'")
++    print(f"\nUnrecognized sender label: '{label}'")
+     names_list = [p['name'] for p in data['identities']]
+     if names_list:
+         print("Existing identities: " + ", ".join(names_list))
+-    choice = input("Existing name / NEW name / Enter to leave label as-is: ").strip()
++    try:
++        choice = input("Existing name / NEW name / Enter to leave label as-is: ").strip()
++    except EOFError:  # no terminal attached: treat like "leave as-is"
++        choice = ""
+ 
+     if not choice:
+         # Leave unresolved — it'll be tagged in the output so it's easy to
+         # find with a search later, and will be asked about again next
+         # time (a future export), but not again within this run.
+-        tag = f"{sender.strip()} [UNRESOLVED]"
++        tag = f"{label} {UNRESOLVED_TAG}"
+         skipped_cache[key] = tag
+         return tag
+ 
+-    existing = next((p for p in data['identities'] if p['name'].lower() == choice.lower()), None)
+-    if existing:
+-        existing['aliases'].append(sender.strip())
+-        alias_map[key] = existing['name']
+-        return existing['name']
+-    else:
+-        data['identities'].append({"name": choice, "aliases": [sender.strip()]})
+-        alias_map[key] = choice
+-        return choice
++    canonical = assign_alias(data, alias_map, label, choice)
++    save_identities(data, identities_path)
++    return canonical
++
++
++def normalize_messages(messages, data, alias_map, identities_path):
++    """Turns parsed raw messages into normalized archive lines: canonical
++    sender names, @-mentions resolved to canonical names, nothing dropped."""
++    result = NormalizeResult()
++    skipped_cache = {}
++
++    for m in messages:
++        if m.get('unparsed'):
++            # Matched no known pattern at all — kept verbatim, flagged,
++            # never dropped.
++            result.lines.append(f"[UNPARSED - review this line] {m['msg']}")
++            result.unparsed_count += 1
++            continue
++
++        text = resolve_mentions(m['msg'], alias_map, result.unresolved_mentions)
++        if m['sender'] is None:
++            # System/event line (e.g. "X added Y", "X changed the subject").
++            # Kept for context, tagged so it's easy to filter out later if
++            # you'd rather not see them — just search/remove "[SYSTEM]" lines.
++            result.lines.append(f"{m['date']}, {m['time']} - [SYSTEM] {text}")
++            continue
++
++        if is_media_or_deleted(m['msg']):
++            result.media_count += 1  # counted for the summary, not dropped
++        canon = resolve_sender(m['sender'], data, alias_map, skipped_cache, identities_path)
++        result.lines.append(f"{m['date']}, {m['time']} - {canon}: {text}")
++
++    return result
+ 
+ 
+ def main():
+@@ -82,66 +127,49 @@ def main():
+         paths = omar_paths.require_paths()
+     except omar_paths.DataDirError as e:
+         sys.exit(str(e))
+-    IDENTITIES_PATH = paths.identities
+-    NORMALIZED_DIR = paths.normalized
++    identities_path = paths.identities
++    normalized_dir = paths.normalized
+ 
+-    data, alias_map = load_identities(IDENTITIES_PATH)
++    data, alias_map = load_identities(identities_path)
+ 
+     with open(raw_path, 'r', encoding='utf-8', errors='replace') as f:
+-        raw_line_count = sum(1 for l in f if l.strip())
++        raw_line_count = sum(1 for line in f if line.strip())
+     messages = parse_export(raw_path)
+     warn_if_suspicious(raw_path, messages, raw_line_count)
+ 
+-    out_lines = []
+-    media_count = 0
+-    unparsed_count = 0
+-    skipped_cache = {}
++    result = normalize_messages(messages, data, alias_map, identities_path)
++    save_identities(data, identities_path)
+ 
+-    for m in messages:
+-        if m.get('unparsed'):
+-            # Matched no known pattern at all — kept verbatim, flagged,
+-            # never dropped.
+-            out_lines.append(f"[UNPARSED - review this line] {m['msg']}")
+-            unparsed_count += 1
+-            continue
+-
+-        if m['sender'] is None:
+-            # System/event line (e.g. "X added Y", "X changed the subject").
+-            # Kept for context, tagged so it's easy to filter out later if
+-            # you'd rather not see them — just search/remove "[SYSTEM]" lines.
+-            event_text = resolve_mentions(m['msg'], alias_map)
+-            out_lines.append(f"{m['date']}, {m['time']} - [SYSTEM] {event_text}")
+-        else:
+-            if is_media_or_deleted(m['msg']):
+-                media_count += 1  # counted for the summary, not dropped
+-            canon = resolve_sender(m['sender'], data, alias_map, skipped_cache)
+-            msg_text = resolve_mentions(m['msg'], alias_map)
+-            out_lines.append(f"{m['date']}, {m['time']} - {canon}: {msg_text}")
+-
+-    save_identities(data, IDENTITIES_PATH)
+-
+-    NORMALIZED_DIR.mkdir(parents=True, exist_ok=True)
++    normalized_dir.mkdir(parents=True, exist_ok=True)
+     out_name = raw_path.stem.replace('_raw', '') + '_normalized.txt'
+-    out_path = NORMALIZED_DIR / out_name
++    out_path = normalized_dir / out_name
+     with open(out_path, 'w', encoding='utf-8') as f:
+-        f.write('\n'.join(out_lines) + '\n')
++        f.write('\n'.join(result.lines) + '\n')
+ 
+-    print(f"\nDone. {len(out_lines)} lines written (nothing dropped).")
+-    print(f"  Of those: {media_count} media/deleted/call placeholders, "
+-          f"{unparsed_count} unparsed line(s) flagged for review.")
++    print(f"\nDone. {len(result.lines)} lines written (nothing dropped).")
++    print(f"  Of those: {result.media_count} media/deleted/call placeholders, "
++          f"{result.unparsed_count} unparsed line(s) flagged for review.")
+     print(f"Saved to: {out_path}")
+ 
+-    if unparsed_count:
+-        print(f"\nNote: {unparsed_count} line(s) didn't match any known "
++    if result.unparsed_count:
++        print(f"\nNote: {result.unparsed_count} line(s) didn't match any known "
+               f"format and were kept verbatim, tagged '[UNPARSED - review "
+               f"this line]'. Search for that tag in the output to find and "
+               f"check them.")
+ 
+-    if '[UNRESOLVED]' in '\n'.join(out_lines):
+-        print("\nNote: some senders were left unresolved and tagged '[UNRESOLVED]'. "
++    if any(UNRESOLVED_TAG in line for line in result.lines):
++        print(f"\nNote: some senders were left unresolved and tagged '{UNRESOLVED_TAG}'. "
+               "Run this script again later (or edit identities.json by hand) to fix them.")
+ 
++    if result.unresolved_mentions:
++        print("\nNote: these @-mentions matched no identity, so they were kept as "
++              "typed. If the same person is tagged under a different contact name "
++              "in another export, the two copies of that message will NOT merge as "
++              "duplicates. Add each label below as an alias in identities.json "
++              "and re-run:")
++        for label, count in result.unresolved_mentions.most_common(25):
++            print(f"    @{label}  ({count}x)")
++
+ 
+ if __name__ == "__main__":
+     main()
+-
+diff --git a/Pipeline/tests/test_chat_analyzer_regressions.py b/Pipeline/tests/test_chat_analyzer_regressions.py
+index e818bca..b80461f 100644
+--- a/Pipeline/tests/test_chat_analyzer_regressions.py
++++ b/Pipeline/tests/test_chat_analyzer_regressions.py
+@@ -167,3 +167,77 @@ def test_future_archive_dates_are_preserved():
+     }])
+ 
+     assert pd.Timestamp(df["timestamp"].max()).date().isoformat() == "2026-12-10"
++
++
++# ---------------------------------------------------------------------------
++# Identity / mention regressions
++# ---------------------------------------------------------------------------
++
++def test_isolate_wrapped_tag_never_becomes_a_phrase():
++    """A message that is only "@<FSI>Akif Bin Atif<PDI>" used to leave the
++    bare name behind (the isolate hid the name from both the tag regex and
++    the mention matcher) and top the repeated-phrases list."""
++    tag = "@\u2068Akif Bin Atif\u2069"
++    df = build_dataframe(_records([(i, "Alice", tag) for i in range(5)]))
++    pattern, _ = _compile_mention_patterns(["Alice", "Akif"], {"akif bin atif": "Akif"})
++    df = prepare_lexical_text(df, ["Alice", "Akif"], {"akif bin atif": "Akif"})
++    idx = _build_phrase_index(df, cfg, mention_pattern=pattern)
++    assert idx["counter"] == {}
++    assert "akif" not in " ".join(df["lexical_text"]).lower()
++
++
++def test_isolate_wrapped_tag_counts_as_a_mention():
++    df = build_dataframe(_records([(0, "Alice", "@\u2068Akif Bin Atif\u2069 hey")]))
++    _, received, pairs = _compute_mentions(df, ["Alice", "Akif"], {"akif bin atif": "Akif"})
++    assert received["Akif"] == 1 and pairs[0]["from"] == "Alice"
++
++
++def test_exact_name_beats_first_name_of_longer_name():
++    _, lookup = _compile_mention_patterns(["Abdullah", "Abdullah Hanif", "Ahmed N.", "Ahmed T."])
++    assert lookup["abdullah"] == "Abdullah"
++    assert "ahmed" not in lookup  # genuinely ambiguous first name
++
++
++def test_possessive_tag_matches_but_embedded_at_does_not():
++    pattern, _ = _compile_mention_patterns(["Omar"])
++    assert pattern.search("@Omar's phone")
++    assert not pattern.search("mail me@Omar")
++    assert not pattern.search("@Omar-ish")
++
++
++def test_system_line_with_colon_and_long_sender_are_parsed_correctly(tmp_path):
++    from parsing import parse_chat_file
++    long_label = "A Very Long Display Name That Goes Past Forty Characters [UNRESOLVED]"
++    path = tmp_path / "a.txt"
++    path.write_text(
++        "01-Aug-2026, 00:32 - [SYSTEM] Omar renamed: it\n"
++        f"01-Aug-2026, 00:33 - {long_label}: hello\n", encoding="utf-8")
++    recs = parse_chat_file(path)
++    assert recs[0]["is_system"] and recs[0]["sender"] is None
++    assert recs[1]["sender"] == long_label and not recs[1]["is_system"]
++
++
++def test_same_minute_messages_keep_archive_order():
++    df = build_dataframe([
++        {"date_s": "01-Aug-2026", "time_s": "10:00", "sender": "Alice",
++         "text": f"m{i}", "is_system": False} for i in range(40)
++    ])
++    assert df["text"].tolist() == [f"m{i}" for i in range(40)]
++
++
++def test_non_latin_words_are_counted():
++    from parsing import tokenize
++    assert tokenize("don’t عصّین hello") == ["don't", "عصّین", "hello"]
++    df = build_dataframe(_records([(0, "Alice", "مرحبا بك")]))
++    assert df.loc[0, "word_count"] == 2
++
++
++def test_nickname_parts_that_are_ordinary_words_stay_in_word_stats(tmp_path):
++    import json
++    import chat_config
++    ids = tmp_path / "ids.json"
++    ids.write_text(json.dumps({"identities": [
++        {"name": "Zephyrine", "aliases": ["Big Zeph"]}]}), encoding="utf-8")
++    tokens = chat_config._name_tokens_from_identities(ids)
++    assert "zephyrine" in tokens and "zeph" in tokens
++    assert "big" not in tokens
+diff --git a/Pipeline/tests/test_identity_resolution.py b/Pipeline/tests/test_identity_resolution.py
+new file mode 100644
+index 0000000..83a8187
+--- /dev/null
++++ b/Pipeline/tests/test_identity_resolution.py
+@@ -0,0 +1,139 @@
++"""
++test_identity_resolution.py -- regression tests for sender/@-mention
++identity resolution: the alias key, mention resolution (number AND
++contact-name forms), system events with a colon in them, paragraph
++breaks, and normalize_messages() end to end.
++"""
++import sys
++from collections import Counter
++from pathlib import Path
++
++sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
++
++from omar_identities import alias_key, build_alias_map  # noqa: E402
++from common import (  # noqa: E402
++    assign_alias, load_identities, parse_export, parse_normalized_blocks,
++    resolve_mentions,
++)
++from normalize_export import normalize_messages  # noqa: E402
++
++FSI, PDI = "\u2068", "\u2069"
++
++IDENTITIES = {"identities": [
++    {"name": "Ahsan", "aliases": ["95005062480096@lid", "+966 58 371 5010",
++                                  "SuperAhsan Ali", "Junior Mossad Agent Ahsan"]},
++    {"name": "Akif", "aliases": ["923221305103@s.whatsapp.net", "Akifa❤️❤️ 🌹",
++                                 "Akif Bin Atif", "AKIF BIN ATIF"]},
++    {"name": "Ahmed N.", "aliases": ["966578926676@s.whatsapp.net", "عصّین"]},
++]}
++
++
++def _alias_map():
++    return build_alias_map(IDENTITIES)[0]
++
++
++def test_alias_key_ignores_case_variation_selector_isolates_and_tilde():
++    assert alias_key("AKIF BIN ATIF") == alias_key("Akif Bin Atif")
++    assert alias_key("Akifa❤\ufe0f") == alias_key("Akifa❤")
++    assert alias_key(f"{FSI}Akif{PDI}") == alias_key("akif")
++    assert alias_key("~\u202fSomeone") == alias_key("Someone")
++
++
++def test_canonical_names_are_implicit_aliases():
++    assert _alias_map()[alias_key("Akif")] == "Akif"
++
++
++def test_conflicting_alias_is_reported_not_silently_overwritten():
++    data = {"identities": [{"name": "A", "aliases": ["Sam"]},
++                           {"name": "B", "aliases": ["sam"]}]}
++    alias_map, conflicts = build_alias_map(data)
++    assert conflicts == {"sam": {"A", "B"}}
++    assert alias_map["sam"] == "A"  # first claimant wins; analyzer drops it
++
++
++def test_contact_name_mentions_resolve_and_lose_their_isolates():
++    am = _alias_map()
++    for label in ("SuperAhsan Ali", "Junior Mossad Agent Ahsan"):
++        assert resolve_mentions(f"@{FSI}{label}{PDI} where u at", am) == "@Ahsan where u at"
++
++
++def test_formatted_phone_number_mention_resolves():
++    assert resolve_mentions(f"@{FSI}+966 58 371 5010{PDI} yo", _alias_map()) == "@Ahsan yo"
++
++
++def test_bare_number_mention_still_resolves():
++    assert resolve_mentions("hi @966578926676", _alias_map()) == "hi @Ahmed N."
++
++
++def test_unresolved_mentions_are_kept_stripped_of_isolates_and_counted():
++    unresolved = Counter()
++    out = resolve_mentions(f"@{FSI}Some Stranger{PDI} hi, @{FSI}Some Stranger{PDI}",
++                           _alias_map(), unresolved)
++    assert out == "@Some Stranger hi, @Some Stranger"
++    assert unresolved == Counter({"Some Stranger": 2})
++
++
++def test_email_like_text_is_not_a_mention():
++    assert resolve_mentions("mail me@966578926676", _alias_map()) == "mail me@966578926676"
++
++
++def test_same_message_from_two_phones_normalizes_identically(tmp_path):
++    """The duplicated-tag bug: two exports that saved the same person under
++    different contact names must produce the same archive line."""
++    am = _alias_map()
++    lines = []
++    for contact in ("SuperAhsan Ali", "Junior Mossad Agent Ahsan"):
++        raw = tmp_path / "raw.txt"
++        raw.write_text(f"8/1/26, 12:32 AM - Ahmed N.: @{FSI}{contact}{PDI} where u at\n"
++                       "8/1/26, 12:33 AM - Ahmed N.: Kya\n", encoding="utf-8")
++        data = {"identities": [dict(p) for p in IDENTITIES["identities"]]}
++        result = normalize_messages(parse_export(raw, day_first=False), data, dict(am), tmp_path / "ids.json")
++        lines.append(result.lines)
++    assert lines[0] == lines[1]
++    assert lines[0][0] == "01-Aug-2026, 00:32 - Ahmed N.: @Ahsan where u at"
++
++
++def test_system_event_containing_a_colon_is_not_a_message(tmp_path):
++    raw = tmp_path / "raw.txt"
++    raw.write_text("8/1/26, 12:15 AM - Omar changed the group description: new text\n"
++                   "8/1/26, 12:16 AM - Ahmed N.: hi\n", encoding="utf-8")
++    msgs = parse_export(raw)
++    assert msgs[0]["sender"] is None
++    assert msgs[0]["msg"] == "Omar changed the group description: new text"
++    assert msgs[1]["sender"] == "Ahmed N."
++
++
++def test_blank_line_inside_a_message_survives_normalize_and_reparse(tmp_path):
++    raw = tmp_path / "raw.txt"
++    raw.write_text("2026-08-01 10:00:00 Alice: para one\n\npara two\n\n"
++                   "2026-08-01 10:01:00 Bob: next\n", encoding="utf-8")
++    msgs = parse_export(raw)
++    assert msgs[0]["msg"] == "para one\n\npara two"
++    assert msgs[1]["msg"] == "next"  # blank line between messages is spacing
++
++    archive = tmp_path / "archive.txt"
++    archive.write_text("01-Aug-2026, 10:00 - Alice: para one\n\npara two\n\n"
++                       "01-Aug-2026, 10:01 - Bob: next\n", encoding="utf-8")
++    blocks = parse_normalized_blocks(archive)
++    assert [b["text"] for b in blocks] == [
++        "01-Aug-2026, 10:00 - Alice: para one\n\npara two",
++        "01-Aug-2026, 10:01 - Bob: next",
++    ]
++
++
++def test_assign_alias_is_idempotent_and_case_insensitive():
++    data = {"identities": [{"name": "Akif", "aliases": []}]}
++    alias_map = {}
++    assert assign_alias(data, alias_map, "Akif B", "akif") == "Akif"
++    assert assign_alias(data, alias_map, "Akif B", "AKIF") == "Akif"
++    assert data["identities"][0]["aliases"] == ["Akif B"]
++    assert alias_map[alias_key("akif b")] == "Akif"
++
++
++def test_load_identities_warns_about_conflicts(tmp_path, capsys):
++    path = tmp_path / "ids.json"
++    path.write_text('{"identities": [{"name": "A", "aliases": ["x"]},'
++                    '{"name": "B", "aliases": ["X"]}]}', encoding="utf-8")
++    _, alias_map = load_identities(path)
++    assert alias_map["x"] == "A"
++    assert "claimed by more than one identity" in capsys.readouterr().err
+-- 
+2.43.0
+

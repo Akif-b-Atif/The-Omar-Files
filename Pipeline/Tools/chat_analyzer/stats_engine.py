@@ -6,7 +6,7 @@ PDF, and search-JSON builders.
 """
 import re
 from collections import Counter, defaultdict
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 import numpy as np
 import pandas as pd
@@ -139,7 +139,7 @@ def compute_overall(df):
     gap_end_ts = ts_sorted.loc[top_gap_idx[0]] if len(top_gap_idx) else None
     gap_start_ts = ts_sorted.loc[top_gap_idx[0] - 1] if len(top_gap_idx) else None
 
-    reply_rows = real.sort_values("timestamp").reset_index(drop=True)
+    reply_rows = real.sort_values("timestamp", kind="stable").reset_index(drop=True)
     reply_gaps = reply_rows["timestamp"].diff().dt.total_seconds()
     same_sender = reply_rows["sender"].eq(reply_rows["sender"].shift())
     msg_gaps = reply_gaps.where((~same_sender) & (reply_gaps > 0)).dropna()
@@ -157,7 +157,7 @@ def compute_overall(df):
 
     # top 3 quickest replies: smallest gap between two messages from
     # DIFFERENT senders (a same-sender gap is a double-text, not a reply)
-    real_sorted = real.sort_values("timestamp").reset_index(drop=True)
+    real_sorted = real.sort_values("timestamp", kind="stable").reset_index(drop=True)
     top3_quickest_replies = []
     if len(real_sorted) > 1:
         gap_secs = real_sorted["timestamp"].diff().dt.total_seconds()
@@ -252,7 +252,7 @@ def compute_individual_stats(df, participants, total_days, aliases=None):
     mention_given, mention_received, mention_pairs = _compute_mentions(real, participants, aliases)
 
     # single-pass computation of double-texting & conversation-starts for everyone
-    real_sorted_all = real.sort_values("timestamp")
+    real_sorted_all = real.sort_values("timestamp", kind="stable")
     senders_seq = real_sorted_all["sender"].tolist()
     ts_seq = real_sorted_all["timestamp"].tolist()
     gap_thresh = timedelta(hours=cfg.CONVERSATION_GAP_HOURS)
@@ -268,10 +268,11 @@ def compute_individual_stats(df, participants, total_days, aliases=None):
         mine = real[real["sender"] == person]
         text_mine = mine[mine["is_real_text"]]
         all_text = " ".join(text_mine["lexical_text"].tolist())
-        # _clean_for_wordphrase strips "@tag" mentions before tokenizing,
-        # since a tag isn't vocabulary — otherwise "@Sarah" would inflate
-        # someone's vocabulary/word-count stats with everyone else's names.
-        tokens = tokenize(_clean_for_wordphrase(all_text))
+        # lexical_text already has @tag mentions stripped (see
+        # prepare_lexical_text), since a tag isn't vocabulary — otherwise
+        # "@Sarah" would inflate someone's vocabulary/word-count stats with
+        # everyone else's names.
+        tokens = tokenize(all_text)
         vocab = set(tokens)
 
         n_msgs = len(mine)
@@ -365,28 +366,50 @@ def compute_individual_stats(df, participants, total_days, aliases=None):
     return out, mention_pairs
 
 
+def _unique_targets(targets_by_variant):
+    """Variants that point at exactly one person; a variant claimed by
+    several people is ambiguous and deliberately not attributed."""
+    return {v: next(iter(t)) for v, t in targets_by_variant.items() if v and len(t) == 1}
+
+
 def _compile_mention_patterns(participants, aliases=None):
-    variant_targets = defaultdict(set)
+    """Compiles the regex that recognizes "@Name" tags of known people,
+    and the {casefolded name: canonical participant} lookup for it.
+
+    Two tiers of names: EXACT ones (full participant names and identities.json
+    aliases) and DERIVED ones (a participant's first name). An exact name
+    always beats a derived one, so "@Abdullah" is the participant called
+    Abdullah even though it's also the first name of "Abdullah Hanif"; a
+    first name shared only between derived names (Ahmed N. / Ahmed T.)
+    stays ambiguous and unattributed."""
+    exact, derived = defaultdict(set), defaultdict(set)
     for p in participants:
-        variant_targets[p.casefold()].add(p)
+        exact[p.casefold()].add(p)
         first = p.split()[0]
         if first != p:
-            variant_targets[first.casefold()].add(p)
+            derived[first.casefold()].add(p)
     for alias, canonical in (aliases or {}).items():
         if "@" not in alias:
-            variant_targets[alias.strip().casefold()].add(canonical)
-    # Ambiguous aliases or first names are deliberately not attributed.
-    variants = [(variant, next(iter(targets)))
-                for variant, targets in variant_targets.items()
-                if variant and len(targets) == 1]
-    variants.sort(key=lambda x: -len(x[0]))
-    alt = "|".join(re.escape(v) for v, _ in variants)
-    if not alt:
+            exact[alias.strip().casefold()].add(canonical)
+
+    lookup = _unique_targets(derived)
+    lookup.update({v: t for v, t in _unique_targets(exact).items()})
+    # A name that is ambiguous among EXACT names must not fall back to a
+    # derived guess either.
+    for v, t in exact.items():
+        if len(t) > 1:
+            lookup.pop(v, None)
+
+    variants = sorted(lookup, key=len, reverse=True)
+    if not variants:
         return re.compile(r"(?!)"), {}
-    pattern = re.compile(r"@(" + alt + r")(?![\w@'-])", re.I | re.UNICODE)
-    lookup = {}
-    for v, canon in variants:
-        lookup[v] = canon
+    alt = "|".join(re.escape(v) for v in variants)
+    # Not preceded by a word char/@ (so "me@Omar" isn't a tag); not followed
+    # by more name characters. A possessive "'s" and trailing punctuation are
+    # fine ("@Omar's", "@Omar-"), but "@Omar-ish"/"@Omar'x" aren't Omar.
+    pattern = re.compile(
+        r"(?<![\w@])@(" + alt + r")(?![\w@]|-\w|'(?!s\b))", re.I | re.UNICODE
+    )
     return pattern, lookup
 
 

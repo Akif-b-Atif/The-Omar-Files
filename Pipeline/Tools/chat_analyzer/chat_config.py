@@ -549,27 +549,46 @@ _EXTENDABLE = ("SWEAR_WORDS", "LAUGH_WORDS", "LAUGH_REGEX_PATTERNS",
                "QUESTION_STARTERS", "EXTRA_STOPWORDS")
 
 
+def _ordinary_words():
+    """Words that occur in the generic baseline chat (baseline_corpus.py),
+    i.e. ordinary vocabulary rather than anyone's name."""
+    import re
+    from baseline_corpus import BASELINE_MESSAGES
+    return {w for msg in BASELINE_MESSAGES for w in re.findall(r"[^\W\d_]+", msg.lower())}
+
+
 def _name_tokens_from_identities(identities_path):
-    """Every canonical name, and every alias that looks like a name rather
-    than a phone number / WhatsApp id, split into lowercase word tokens
-    ("Alice Smith" -> alice, smith, alicesmith)."""
+    """Lowercase word tokens for every canonical name and every alias that
+    looks like a name rather than a phone number / WhatsApp id ("Alice
+    Smith" -> alice, smith, alicesmith).
+
+    Tokens of ALIASES are skipped when they're ordinary words (found in the
+    generic baseline chat): a nickname like "Big Hash" or "The Guy With
+    Back Problems" would otherwise make "big", "guy", "with", "back" and
+    "problems" vanish from every word statistic. Canonical names are always
+    kept whole."""
     try:
         with open(identities_path, "r", encoding="utf-8") as f:
             data = _json.load(f)
     except (OSError, ValueError):
         return []
+
+    def words_of(label):
+        if not isinstance(label, str) or "@" in label:
+            return []
+        if sum(ch.isdigit() for ch in label) > 2:
+            return []  # a phone number, not a name
+        return [w for w in "".join(
+            ch if ch.isalpha() or ch.isspace() else " " for ch in label
+        ).lower().split() if len(w) > 1]
+
+    ordinary = _ordinary_words()
     tokens = set()
     for person in data.get("identities", []):
-        labels = [person.get("name", "")] + list(person.get("aliases", []))
-        for label in labels:
-            if not isinstance(label, str) or "@" in label:
-                continue
-            if sum(ch.isdigit() for ch in label) > 2:
-                continue  # a phone number, not a name
-            words = [w for w in "".join(
-                ch if ch.isalpha() or ch.isspace() else " " for ch in label
-            ).lower().split() if len(w) > 1]
-            tokens.update(words)
+        for label, keep_ordinary in [(person.get("name", ""), True)] + [
+                (alias, False) for alias in person.get("aliases", [])]:
+            words = words_of(label)
+            tokens.update(w for w in words if keep_ordinary or w not in ordinary)
             if len(words) > 1:
                 tokens.add("".join(words))
     return sorted(tokens)

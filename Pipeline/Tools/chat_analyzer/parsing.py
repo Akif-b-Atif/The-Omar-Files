@@ -4,19 +4,24 @@ pandas DataFrame, one row per message (system messages included, flagged).
 """
 import re
 import pandas as pd
-import numpy as np
 
 # --- regexes -----------------------------------------------------------
 
 # Leading invisible marks WhatsApp sometimes inserts (LRM/RLM/BOM)
 _INVISIBLE = "\u200e\u200f\ufeff"
+# Directional isolates WhatsApp wraps @-mention labels in. The pipeline
+# strips them while normalizing; this is the safety net for an archive
+# that still has them, so "@<FSI>Name<PDI>" can never leave a bare name
+# behind after the "@" is removed.
+_ISOLATES_RE = re.compile("[\u2066-\u2069]")
+_SYSTEM_MARKER = "[SYSTEM]"
 
 DATE_PREFIX_RE = re.compile(
     r"^[" + _INVISIBLE + r"]*(\d{1,2}-[A-Za-z]{3}-\d{4}), (\d{1,2}:\d{2}(?::\d{2})?) - "
 )
 MSG_RE = re.compile(
     r"^[" + _INVISIBLE + r"]*(\d{1,2}-[A-Za-z]{3}-\d{4}), (\d{1,2}:\d{2}(?::\d{2})?) - "
-    r"([^:\n]{1,40}?): (.*)$"
+    r"([^:\n]{1,100}?): (.*)$"
 )
 
 EDITED_SUFFIX_RE = re.compile(r"\s*<This message was edited>\s*$", re.I)
@@ -38,7 +43,11 @@ UNPARSED_RE = re.compile(r"(?m)^\s*\[UNPARSED\s*-\s*review this line\].*$", re.I
 DELETED_RE = re.compile(r"(?:this message was deleted|you deleted this message)", re.I)
 CALL_RE = re.compile(r"(?:missed voice call|missed video call|^voice call$|^video call$)", re.I)
 
-WORD_RE = re.compile(r"[A-Za-z']+")
+# A word: a run of letters in ANY script (so Arabic/Urdu/accented text is
+# counted, not silently ignored), including combining marks such as Arabic
+# diacritics, optionally joined by apostrophes ("don't", "don’t").
+_WORD_CHAR = r"(?:[^\W\d_]|[\u0300-\u036f\u0610-\u061a\u064b-\u065f\u0670])"
+WORD_RE = re.compile(rf"{_WORD_CHAR}+(?:['’]{_WORD_CHAR}+)*")
 # A "@name" tag/mention token (e.g. "@Sarah") - used to exclude tags from
 # word/phrase frequency analysis, since a tag isn't vocabulary.
 TAG_RE = re.compile(r"@\w+", re.UNICODE)
@@ -68,7 +77,14 @@ def parse_chat_file(filepath, encoding="utf-8"):
                     cur["text"] += "\n"
                 continue
 
-            m = MSG_RE.match(line)
+            # A "[SYSTEM]" line is an event even if its text contains ": "
+            # (e.g. "[SYSTEM] X changed the description: hi") -- it must
+            # not be mistaken for a message from a person called "[SYSTEM] X
+            # changed the description".
+            dm = DATE_PREFIX_RE.match(line)
+            is_system_line = bool(dm) and line[dm.end():].startswith(_SYSTEM_MARKER)
+
+            m = None if is_system_line else MSG_RE.match(line)
             if m:
                 if cur is not None:
                     records.append(cur)
@@ -82,7 +98,6 @@ def parse_chat_file(filepath, encoding="utf-8"):
                 }
                 continue
 
-            dm = DATE_PREFIX_RE.match(line)
             if dm:
                 if cur is not None:
                     records.append(cur)
@@ -152,12 +167,16 @@ def build_dataframe(records):
     df["char_count"] = df["analysis_text"].str.len()
     df["word_count"] = df["analysis_text"].apply(lambda t: len(WORD_RE.findall(t)))
 
-    df = df.sort_values("timestamp").reset_index(drop=True)
+    # kind="stable": messages sent in the same minute must keep their archive
+    # order. The default (quicksort) shuffles ties, which scrambles
+    # double-texting, reply-gap and first/last-seen calculations.
+    df = df.sort_values("timestamp", kind="stable").reset_index(drop=True)
     return df
 
 
 def _text_for_analysis(text):
     """Remove export placeholders from analysis without changing source text."""
+    text = _ISOLATES_RE.sub("", text)
     text = MEDIA_RE.sub(" ", text)
     text = FORWARDED_RE.sub(" ", text)
     text = WAITING_RE.sub(" ", text)
@@ -173,4 +192,6 @@ def get_participants(df, min_messages=1):
 
 
 def tokenize(text):
-    return [w.strip("'").lower() for w in WORD_RE.findall(text) if w.strip("'")]
+    # Curly apostrophes (iPhone keyboards) are folded to straight ones so
+    # "don’t" and "don't" are the same word.
+    return [w.replace("’", "'").lower() for w in WORD_RE.findall(text)]

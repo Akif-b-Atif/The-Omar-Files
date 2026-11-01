@@ -70,6 +70,7 @@ from search_export import build_search_data, write_search_json
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR.parents[1]))  # Pipeline/
 import omar_paths  # noqa: E402
+from omar_identities import build_alias_map  # noqa: E402
 
 try:
     _PATHS = omar_paths.get_paths()
@@ -139,21 +140,15 @@ def load_arc_segments(arc_summary_path, arc_report_path):
 
 
 def _load_mention_aliases():
+    """{alias_key: canonical name} for every alias that unambiguously
+    belongs to one identity. An alias shared by two identities is dropped
+    rather than guessed (see omar_identities.build_alias_map)."""
     if not IDENTITIES_PATH.exists():
         return {}
     with open(IDENTITIES_PATH, "r", encoding="utf-8") as f:
         identities = json.load(f)
-    targets = {}
-    for person in identities.get("identities", []):
-        for alias in person.get("aliases", []):
-            key = alias.strip().casefold()
-            if key:
-                targets.setdefault(key, set()).add(person["name"])
-    return {
-        alias: next(iter(names))
-        for alias, names in targets.items()
-        if len(names) == 1
-    }
+    alias_map, conflicts = build_alias_map(identities)
+    return {key: name for key, name in alias_map.items() if key not in conflicts}
 
 
 def compute_bundle(df, participants, cfg_profile, log_label="", aliases=None):

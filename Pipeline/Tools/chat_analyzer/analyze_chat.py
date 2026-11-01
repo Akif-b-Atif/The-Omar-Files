@@ -10,18 +10,18 @@ Turns Full_Archive.txt into:
 
 Basic usage:
     python3 analyze_chat.py
-    python3 analyze_chat.py --input ../../../Full_Archive.txt --outdir .
+    python3 analyze_chat.py --input path/to/Full_Archive.txt --outdir .
 
-By default this reads the repo's own Full_Archive.txt directly (no need to
-copy it here first, and no need to run this from any particular folder)
-and writes chat_report.html, chat_report.pdf, and chat_search_data.json
-to Reports/ at the project root (created automatically), alongside every
-other generated report. Chart images used to build those files are
-cached in _chart_cache/ next to this script — that folder isn't a report
-itself, just working files.
+By default this reads Full_Archive.txt from your data directory (see
+Pipeline/omar_paths.py; no need to copy it anywhere or run this from any
+particular folder) and writes chat_report.html, chat_report.pdf, and
+chat_search_data.json to that directory's Reports/ folder, alongside every
+other generated report. Chart images used to build those files are cached
+in the data directory's .cache/chart_cache/ — working files, not a report.
 
-Edit chat_config.py first to plug in your own swear-word / laugh-word lists
-and tune thresholds.
+To plug in your own swear-word / laugh-word lists and tune thresholds, put
+them in your data directory's config.json (see Pipeline/config.example.json
+and the top of chat_config.py) rather than editing chat_config.py.
 
 Custom slices (section / date-range / people / one-off threshold tweaks):
     # Only a PDF, only the words & fun-facts sections
@@ -65,14 +65,20 @@ from html_report import build_html, SECTION_ORDER as HTML_SECTION_ORDER
 from pdf_report import build_pdf
 from search_export import build_search_data, write_search_json
 
-# This file lives at Pipeline/Tools/chat_analyzer/analyze_chat.py, three
-# folders below the repo root, where Full_Archive.txt lives.
+# Everything chat-specific (the archive, identities, reports, caches) lives
+# in the data directory, outside this repo -- see Pipeline/omar_paths.py.
 SCRIPT_DIR = Path(__file__).resolve().parent
-REPO_ROOT = SCRIPT_DIR.parents[2]
-IDENTITIES_PATH = REPO_ROOT / "Pipeline" / "identities.json"
-DEFAULT_INPUT = REPO_ROOT / "Full_Archive.txt"
-DEFAULT_OUTDIR = REPO_ROOT / "Reports"  # chat_report.html/.pdf + chat_search_data.json
-CHART_CACHE_DIR = SCRIPT_DIR / "_chart_cache"  # intermediate PNGs only — not a final report
+sys.path.insert(0, str(SCRIPT_DIR.parents[1]))  # Pipeline/
+import omar_paths  # noqa: E402
+
+try:
+    _PATHS = omar_paths.get_paths()
+except omar_paths.DataDirError as _e:
+    sys.exit(str(_e))
+IDENTITIES_PATH = _PATHS.identities
+DEFAULT_INPUT = _PATHS.archive
+DEFAULT_OUTDIR = _PATHS.reports  # chat_report.html/.pdf + chat_search_data.json
+CHART_CACHE_DIR = _PATHS.chart_cache  # intermediate PNGs only — not a final report
 
 # arc_analyzer.py lives in the sibling Tools/arc_analyzer/ folder. Its
 # arc_names.py module (parsing the editable "ARC NAMES" table in
@@ -82,8 +88,8 @@ ARC_ANALYZER_DIR = SCRIPT_DIR.parent / "arc_analyzer"
 sys.path.insert(0, str(ARC_ANALYZER_DIR))
 import arc_names  # noqa: E402
 
-DEFAULT_ARC_REPORT = REPO_ROOT / "Reports" / "arc_report.txt"
-DEFAULT_ARC_SUMMARY = ARC_ANALYZER_DIR / "data" / "arc_summary.json"
+DEFAULT_ARC_REPORT = _PATHS.reports / "arc_report.txt"
+DEFAULT_ARC_SUMMARY = _PATHS.arc_data / "arc_summary.json"
 
 # Section names accepted by --sections. Order here = order they're rendered in.
 ALL_SECTIONS = HTML_SECTION_ORDER + ["lastperiod", "arcs"]
@@ -249,7 +255,7 @@ Examples:
 """)
     ap.add_argument("--input", default=str(DEFAULT_INPUT), help="Path to the chat .txt export")
     ap.add_argument("--outdir", default=str(DEFAULT_OUTDIR),
-                     help="Where to write report files (default: Reports/ at the project root)")
+                     help="Where to write report files (default: Reports/ in your data directory)")
     ap.add_argument("--min-messages", type=int, default=10,
                      help="Ignore senders with fewer than this many messages (default 10)")
     ap.add_argument("--out-name", default="chat_report",

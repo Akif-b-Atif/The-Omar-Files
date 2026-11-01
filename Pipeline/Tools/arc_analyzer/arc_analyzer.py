@@ -10,16 +10,15 @@ rolling-average frequency curve with each segment marked.
 
 Expected input line format (one message per line, WhatsApp-style export):
 
-    19-Jul-2026, 01:17:49 - Akif: Cursed
+    19-Jul-2026, 01:17:49 - Alice: Cursed
 
 Lines that don't match the "<date> - <sender>: <text>" pattern are treated
 as a continuation of the previous message (e.g. multi-line texts).
 
-By default this reads the repo's own Full_Archive.txt directly and writes
-arc_report.txt and arc_timeline.png to Reports/ at the project root
-(created automatically, alongside every other generated report), with
-arc_summary.csv/json in this module's own data/ folder — no setup needed
-before running it.
+By default this reads Full_Archive.txt from your data directory (see
+Pipeline/omar_paths.py) and writes arc_report.txt and arc_timeline.png to
+that directory's Reports/ folder, with arc_summary.csv/json in its
+.cache/arc/ folder — no setup needed before running it.
 
 arc_report.txt opens with an editable "ARC NAMES" table, one line per
 arc/mini-arc, e.g. `arc 1: Miniarc-1`. Replace the text after the colon
@@ -30,8 +29,15 @@ Names/descriptions you set are preserved the next time this script
 regenerates the report, matched to the same arc/mini-arc by its
 chronological position within its own type.
 
-Everything you'd want to tune lives in the CONFIG section right below the
-imports. Nothing else in the file should need editing for normal use.
+Everything you'd want to tune is a setting in the CONFIG class below, and
+the values in this file are generic defaults. To tune them for YOUR chat,
+don't edit this file -- put an "arc_analyzer" section in your data
+directory's config.json instead, e.g.
+
+    {"arc_analyzer": {"ROLLING_WINDOW_DAYS": 21, "ARC_PEAK_MULTIPLIER": 1.5}}
+
+Any setting named in CONFIG can be overridden that way (see
+Pipeline/config.example.json).
 """
 
 import re
@@ -50,12 +56,15 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 
-import arc_names
-
-# This file lives at Pipeline/Tools/arc_analyzer/arc_analyzer.py, three
-# folders below the repo root, where Full_Archive.txt lives.
 SCRIPT_DIR = Path(__file__).resolve().parent
-REPO_ROOT = SCRIPT_DIR.parents[2]
+sys.path.insert(0, str(SCRIPT_DIR.parents[1]))  # Pipeline/, for omar_paths
+import omar_paths  # noqa: E402
+import arc_names  # noqa: E402
+
+try:
+    _PATHS = omar_paths.get_paths()
+except omar_paths.DataDirError as _e:
+    sys.exit(str(_e))
 
 
 # ============================================================================
@@ -63,12 +72,12 @@ REPO_ROOT = SCRIPT_DIR.parents[2]
 # ============================================================================
 class CONFIG:
     # --- I/O ---
-    INPUT_FILE = str(REPO_ROOT / "Full_Archive.txt")   # the shared archive, read directly
-    OUTPUT_DIR = str(REPO_ROOT / "Reports")              # arc_report.txt / arc_timeline.png go here
-    DATA_DIR = str(SCRIPT_DIR / "data")                  # arc_summary.csv/json go here (supplementary, not a final report)
+    INPUT_FILE = str(_PATHS.archive)      # the archive, read directly
+    OUTPUT_DIR = str(_PATHS.reports)      # arc_report.txt / arc_timeline.png go here
+    CACHE_DIR = str(_PATHS.arc_data)      # arc_summary.csv/json go here (supplementary, not a final report)
 
     # --- Parsing ---
-    # Matches: "19-Jul-2026, 01:17 - Akif: message text" (seconds optional,
+    # Matches: "19-Jul-2026, 01:17 - Alice: message text" (seconds optional,
     # for backward compatibility with any archive still in the older
     # HH:MM:SS format)
     LINE_REGEX = re.compile(
@@ -76,44 +85,39 @@ class CONFIG:
         r"(?P<sender>[^:]+):\s(?P<text>.*)$"
     )
     DATE_FORMATS = ["%d-%b-%Y, %H:%M", "%d-%b-%Y, %H:%M:%S"]
-    # Substrings that mark a line as a system message to drop entirely
-    # (edit this list to match whatever your export uses)
-    SYSTEM_MESSAGE_SUBSTRINGS = [
-        "Messages and calls are end-to-end encrypted",
-        "created group",
-        "added",
-        "left",
-        "changed the subject",
-        "changed this group's icon",
-        "changed their phone number",
-    ]
+    # normalize_export.py tags group events ("X added Y", "X changed the
+    # subject"...) with this marker, and they're dropped here -- they're
+    # not messages. This is matched against the SENDER field only, never
+    # message text, so an ordinary message containing "left" or "added"
+    # is never dropped.
+    SYSTEM_SENDER_PREFIX = "[SYSTEM]"
     # --- Rolling average / baseline ---
-    ROLLING_WINDOW_DAYS = 21      # the "2-week rolling average" window - default 14, best 14
-    ROLLING_CENTERED = True       # center the rolling window on each day - default True, best True
+    ROLLING_WINDOW_DAYS = 14      # rolling-average window, in days
+    ROLLING_CENTERED = True       # center the rolling window on each day
 
     # --- Local maxima detection ---
     # A day is a local maximum if its rolling value is the max within
     # +/- LOCAL_MAX_ORDER_DAYS of itself.
-    LOCAL_MAX_ORDER_DAYS = 4 # default 4, best 4
+    LOCAL_MAX_ORDER_DAYS = 4
     # Minimum height (as a multiple of the whole-GC mean) for a local max
     # to be considered a candidate spike at all.
-    MIN_PEAK_MULTIPLIER = 1  # default 1.2, best 1
+    MIN_PEAK_MULTIPLIER = 1.2
 
     # --- Region growing (walking outward from a peak) ---
     # "Back to usual" = rolling average has returned to within this
     # multiple of the whole-GC mean.
-    RETURN_TO_BASELINE_MULTIPLIER = 0.7 #default 1.05, best 0.7
+    RETURN_TO_BASELINE_MULTIPLIER = 1.05
 
     # --- Arc vs Mini-arc classification ---
-    ARC_PEAK_MULTIPLIER = 1.5     # peak must be >= this * mean to be a full Arc - default 2.0, best 1.5
-    ARC_MIN_DURATION_DAYS = 28     # ...and last at least this many days - default 28, best 28
+    ARC_PEAK_MULTIPLIER = 2.0     # peak must be >= this * mean to be a full Arc
+    ARC_MIN_DURATION_DAYS = 28    # ...and last at least this many days
     # Anything that cleared MIN_PEAK_MULTIPLIER but didn't qualify as an
     # Arc becomes a Mini-arc automatically.
 
     # --- Merging nearby regions ---
     # Two detected regions separated by less than this many days get
     # merged into a single region before classification.
-    MERGE_GAP_DAYS = 1 # default 1, best 1
+    MERGE_GAP_DAYS = 1
 
     # --- Per-segment stats ---
     TOP_N_CONTRIBUTORS = 3        # most active senders shown per segment
@@ -127,6 +131,27 @@ class CONFIG:
     ROLLING_LINE_COLOR = "steelblue"
     MEAN_LINE_COLOR = "gray"
     DPI = 150
+
+
+def _apply_user_overrides():
+    """Overrides CONFIG settings from the "arc_analyzer" section of the
+    data directory's config.json. Unknown names are an error (a typo
+    should be loud, not silently ignored)."""
+    try:
+        overrides = omar_paths.user_config_section("arc_analyzer")
+    except omar_paths.DataDirError as e:
+        sys.exit(str(e))
+    for name, value in overrides.items():
+        if not name.isupper() or not hasattr(CONFIG, name):
+            sys.exit(f"config.json: unknown arc_analyzer setting '{name}'. "
+                     f"Valid names are the UPPER_CASE settings in CONFIG "
+                     f"(Pipeline/Tools/arc_analyzer/arc_analyzer.py).")
+        if name == "FIGSIZE" and isinstance(value, list):
+            value = tuple(value)
+        setattr(CONFIG, name, value)
+
+
+_apply_user_overrides()
 
 
 # ============================================================================
@@ -147,7 +172,7 @@ def parse_chat(filepath):
             if m:
                 ts_str, sender, text = m.group("ts"), m.group("sender").strip(), m.group("text")
 
-                if any(sub.lower() in line.lower() for sub in CONFIG.SYSTEM_MESSAGE_SUBSTRINGS):
+                if sender.startswith(CONFIG.SYSTEM_SENDER_PREFIX):
                     current = None  # don't let continuation lines attach to a dropped system msg
                     continue
 
@@ -496,18 +521,18 @@ def main():
     parser = argparse.ArgumentParser(description="Detect Arcs/Mini-arcs/Filler in a group chat export.")
     parser.add_argument("input_file", nargs="?", default=CONFIG.INPUT_FILE)
     parser.add_argument("-o", "--outdir", default=CONFIG.OUTPUT_DIR,
-                         help="Where arc_report.txt and arc_timeline.png go (default: Reports/ at the project root)")
-    parser.add_argument("--data-dir", default=CONFIG.DATA_DIR,
-                         help="Where arc_summary.csv/json go (default: this module's own data/ folder)")
+                         help="Where arc_report.txt and arc_timeline.png go (default: Reports/ in your data directory)")
+    parser.add_argument("--cache-dir", default=CONFIG.CACHE_DIR,
+                         help="Where arc_summary.csv/json go (default: .cache/arc/ in your data directory)")
     args = parser.parse_args()
 
     os.makedirs(args.outdir, exist_ok=True)
-    os.makedirs(args.data_dir, exist_ok=True)
+    os.makedirs(args.cache_dir, exist_ok=True)
 
     if not os.path.isfile(args.input_file):
         sys.exit(f"Input file not found: {args.input_file}\n"
                   f"Pass a path as the first argument to use a different file, e.g.:\n"
-                  f"  python3 arc_analyzer.py ../../../Full_Archive.txt")
+                  f"  python3 arc_analyzer.py path/to/Full_Archive.txt")
 
     print(f"Parsing {args.input_file} ...")
     df = parse_chat(args.input_file)
@@ -546,7 +571,7 @@ def main():
         )
 
     report_path, report_text = write_report(all_segments, mean_baseline, args.outdir)
-    csv_path, json_path = write_csv_json(all_segments, args.data_dir)
+    csv_path, json_path = write_csv_json(all_segments, args.cache_dir)
     plot_path = plot_timeline(daily, rolling, mean_baseline, all_segments, args.outdir)
 
     print("\n" + report_text[:2000] + ("\n... (truncated, see file) ..." if len(report_text) > 2000 else ""))

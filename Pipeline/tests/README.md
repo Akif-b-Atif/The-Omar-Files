@@ -8,7 +8,7 @@ mis-dated in someone's only copy of their chat history.
 
 ```
 cd Pipeline
-pip install -r requirements.txt --break-system-packages   # installs pytest too
+pip install -r requirements-dev.txt   # includes pytest (a virtualenv is best)
 python3 -m pytest tests/ -v
 ```
 
@@ -25,19 +25,33 @@ python3 -m pytest tests/ -v -m "not smoke"
   ambiguous input), the three real WhatsApp export line formats, and
   the small helpers (`clean_line`, `resolve_mentions`,
   `extract_slot_key`, etc).
-- **`test_merge.py`** — unit tests for `scripts/3_merge_export.py`'s
+- **`test_merge.py`** — unit tests for `scripts/merge_export.py`'s
   chronological merge/dedup logic directly: new messages get added,
   exact duplicates get skipped, a re-synced "waiting for this
   message" placeholder is correctly recognized as already covered,
   and re-running the same merge twice adds nothing the second time
   (the "safe to re-run" guarantee in that script's own docstring).
+  Also pins that genuinely repeated messages (the same text, same
+  sender, same minute) are never collapsed, and that the archive write
+  is atomic.
+- **`test_paths.py`** / **`test_config.py`** — where the data directory
+  is found (and refused when it's inside the repo), `init-data`,
+  `config.json` loading, and that the shipped defaults are generic
+  while your overrides and your members' names come from the data
+  directory.
 - **`test_pipeline_smoke.py`** — an end-to-end test that actually
-  shells out to `python3 control.py merge` / `reports` / `doctor`
-  against the real `sample_data/`, in a throwaway copy of the whole
-  repo, and checks every promised output file gets written. Marked
+  shells out to `python3 control.py init-data` / `merge` / `reports` /
+  `migrate` / `doctor` against the real `sample_data/`, in a throwaway
+  copy of the repo with a sibling `data/` folder, and checks every
+  promised output file gets written there and that nothing chat-related
+  ever lands inside the code repo. Also covers the auto-commit to the
+  data repo. Marked
   `smoke` since it's slower (real subprocesses, real charts/PDFs).
 
 ## What's not covered yet
+
+`conftest.py` points `OMAR_DATA_DIR` at a temp folder for every test, so no
+test can read or write your real data.
 
 The `Tools/` analyzers (`chat_analyzer`, `arc_analyzer`) are only
 exercised indirectly, through the smoke test actually running them

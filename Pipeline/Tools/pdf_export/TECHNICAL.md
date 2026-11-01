@@ -17,7 +17,7 @@ its variants) are skipped rather than printed as empty entries.
 This needs `reportlab`, plus a Unicode-capable font file:
 
 ```
-pip install -r ../../requirements.txt --break-system-packages
+pip install -r ../../requirements.txt
 ```
 
 (That's the one shared `requirements.txt` for every tool under
@@ -29,7 +29,7 @@ folder (not this folder — that font folder is shared with
 chat_analyzer's PDF export too, so it only needs to exist once for both
 tools). Nothing to download; it's already tracked in the repo.
 
-`run_new_month.py` runs this automatically every month. Run it directly
+`control.py` runs this automatically every month. Run it directly
 here only to regenerate the PDF on its own, without running the whole
 monthly routine.
 
@@ -39,8 +39,8 @@ monthly routine.
 python3 to_pdf.py
 ```
 
-With no arguments, this reads `Full_Archive.txt` from the project root
-and writes `Full_Archive.pdf` to `Reports/` at the project root
+With no arguments, this reads `Full_Archive.txt` from the data directory
+and writes `Full_Archive.pdf` to its `Reports/` folder
 (created automatically). Both can be overridden:
 
 ```

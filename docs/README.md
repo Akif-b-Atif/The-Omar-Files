@@ -46,7 +46,7 @@ Everything besides the files listed above is the machinery that builds
 and updates all of it — not needed just to read the archive or its
 reports.
 
-- **`Raw_Exports/`** — where each month's raw WhatsApp export goes.
+- **`data/Raw_Exports/`** — where each month's raw WhatsApp export goes (the `data/` folder sits next to the code repo, not inside it).
 - **`Pipeline/`** — all the code: `control.py` (the monthly update
   script and control panel), the identity/name mappings, and the tools
   that build each report.

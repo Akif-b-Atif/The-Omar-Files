@@ -1,0 +1,22 @@
+{
+  "_about": "This is the template for config.json in your data directory (`python3 control.py init-data` copies it there). Everything here is optional: delete what you don't need. Keys starting with an underscore are comments and are ignored. Your group's names don't go here -- they're picked up from identities.json automatically.",
+
+  "chat_analyzer": {
+    "_about": "Tweaks for the chat report. 'extend' ADDS to a list setting; 'override' REPLACES a setting. Names are the UPPER_CASE settings in Pipeline/Tools/chat_analyzer/chat_config.py.",
+    "extend": {
+      "SWEAR_WORDS": [],
+      "LAUGH_WORDS": [],
+      "LAUGH_REGEX_PATTERNS": [],
+      "QUESTION_STARTERS": [],
+      "EXTRA_STOPWORDS": []
+    },
+    "override": {
+      "_example": "Remove the underscore from a key to use it, e.g.  \"LAST_PERIOD_DAYS\": 180,  \"TOP_N\": 20,  \"CONVERSATION_GAP_HOURS\": 4"
+    }
+  },
+
+  "arc_analyzer": {
+    "_about": "Tuning for the Arc / Mini-arc detector (the UPPER_CASE settings in the CONFIG class of Pipeline/Tools/arc_analyzer/arc_analyzer.py). Defaults are generic; if your chat's activity is spikier or flatter than usual, this is where to tune.",
+    "_example": "e.g.  \"ROLLING_WINDOW_DAYS\": 21,  \"MIN_PEAK_MULTIPLIER\": 1.0,  \"RETURN_TO_BASELINE_MULTIPLIER\": 0.7,  \"ARC_PEAK_MULTIPLIER\": 1.5"
+  }
+}

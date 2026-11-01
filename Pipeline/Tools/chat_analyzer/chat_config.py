@@ -1,22 +1,51 @@
 """
-Editable configuration for analyze_chat.py
--------------------------------------------
-Edit the lists below with your own words. Matching is case-insensitive and
-matches whole words only (so "ass" won't match inside "class").
-Multi-word entries (e.g. "oh my god") are matched as exact phrases.
+Settings for analyze_chat.py  --  generic defaults
+---------------------------------------------------
+The values in THIS file are neutral defaults that work for any English-ish
+group chat. Don't edit them for your own group: put your group's words and
+tweaks in `config.json` in your data directory (see Pipeline/config.example.json)
+so they stay private and survive updates to the code.
+
+    {
+      "chat_analyzer": {
+        "extend":   {"SWEAR_WORDS": ["..."], "LAUGH_WORDS": ["..."]},
+        "override": {"LAST_PERIOD_DAYS": 180, "TOP_N": 20}
+      }
+    }
+
+  - "extend"   adds to a list setting (SWEAR_WORDS, LAUGH_WORDS,
+               LAUGH_REGEX_PATTERNS, QUESTION_STARTERS, EXTRA_STOPWORDS).
+  - "override" replaces any setting outright.
+
+Your group members' names are excluded from the word-frequency stats
+automatically: every name and name-like alias in identities.json is added
+to EXTRA_STOPWORDS when this module loads. No manual list to keep in sync.
+
+Matching is case-insensitive and matches whole words only (so "ass" won't
+match inside "class"). Multi-word entries (e.g. "oh my god") are matched
+as exact phrases.
 """
+import json as _json
+import sys as _sys
 import types as _types
+from pathlib import Path as _Path
+
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))  # Pipeline/
+import omar_paths as _omar_paths  # noqa: E402
 
 # Words counted towards each person's "swears the most" stats.
 SWEAR_WORDS = [
-    "fuck", "fucking", "fucked", "shit", "damn", "hell", "ass", "asshole", "bitch", "crap", "bastard", "piss", "Retard", "penis", "dick", "cum", "balls", #AI-given
-    "Shit", "fuck", "mf", "mofo", "mothernigger", "retard", "ass", "rtrd", "nigger", "nga", "dumbass", "dumbahh", "shitter", "kutte", "kutta", "bc", "mc", "mkc", "bhen ke bhai", "khabees", "fuckass", "duckass", "dumbfuck", "mothertrucker", #Omar-sponsored
+    "fuck", "fucking", "fucked", "shit", "shitty", "damn", "hell", "ass",
+    "asshole", "bitch", "crap", "bastard", "piss", "dick", "dumbass",
+    "bullshit", "wtf",
 ]
 
-# Words/tokens counted as "laughing". Add your group's specific ones
-# (transliterated laughs, "lmaooo" style stretches are matched via regex below).
+# Words/tokens counted as "laughing". Add your group's specific ones via
+# config.json ("extend") -- transliterated laughs, group-specific reactions.
+# "lmaooo"-style stretches are matched via the regex patterns below.
 LAUGH_WORDS = [
-    "haha", "hahaha", "lol", "lmao", "lmfao", "rofl", "hehe", "jajaja", "😂", "😂", "😭",
+    "haha", "hahaha", "lol", "lmao", "lmfao", "rofl", "hehe", "jajaja",
+    "\U0001F602", "\U0001F923", "\U0001F62D",
 ]
 # Regex-style stretch matching: catches "hahahaha", "ahahah", "lmaooooo" etc.
 LAUGH_REGEX_PATTERNS = [
@@ -126,7 +155,7 @@ EARLY_BIRD_HOURS = (5, 10)    # 5 - 10 =>  5:00am - 9:59am
 # generic-chat baseline (see baseline_corpus.py) to find words THIS chat
 # uses noticeably more than a typical chat, not just words said a lot. But
 # this list still matters for that: without it, common pronouns/verbs and
-# — importantly — this group's own member names (see the block below) would
+# — importantly — this group's own member names (added automatically from identities.json, see the bottom of this file) would
 # swamp that comparative list too, since the synthetic baseline obviously
 # never mentions anyone's name and rarely uses "i"/"you"/"the" at chat-like
 # rates either. It's also still what the PER-PERSON "signature words"
@@ -510,28 +539,74 @@ EXTRA_STOPWORDS += [
 
 ]
 
-EXTRA_STOPWORDS += [
-    "Akif", "akif",
-    "Ahmed", "ahmed",
-    "Nasser", "nasser",
-    "Tariq", "tariq",
-    "Omar", "omar",
-    "Umer", "umer",
-    "Omer", "omer",
-    "Umar", "umar",
-    "Ahsan", "ahsan",
-    "Shabeeb", "shabeeb",
-    "Hashem", "hashem",
-    "Hashim", "hashim",
-    "Ali", "ali",
-    "Alizaman", "alizaman",
-    "Rafay", "rafay",
-    "Abdullah", "abdullah",
-    "AbdulRafay", "abdulrafay",
-    "Abdulrafay", "abdulrafay",
-    "Numan", "numan",
 
-]
+
+# ---------------------------------------------------------------------------
+# Your group's names + your own settings (from the data directory).
+# Everything above is generic; everything personal arrives from here.
+# ---------------------------------------------------------------------------
+_EXTENDABLE = ("SWEAR_WORDS", "LAUGH_WORDS", "LAUGH_REGEX_PATTERNS",
+               "QUESTION_STARTERS", "EXTRA_STOPWORDS")
+
+
+def _name_tokens_from_identities(identities_path):
+    """Every canonical name, and every alias that looks like a name rather
+    than a phone number / WhatsApp id, split into lowercase word tokens
+    ("Alice Smith" -> alice, smith, alicesmith)."""
+    try:
+        with open(identities_path, "r", encoding="utf-8") as f:
+            data = _json.load(f)
+    except (OSError, ValueError):
+        return []
+    tokens = set()
+    for person in data.get("identities", []):
+        labels = [person.get("name", "")] + list(person.get("aliases", []))
+        for label in labels:
+            if not isinstance(label, str) or "@" in label:
+                continue
+            if sum(ch.isdigit() for ch in label) > 2:
+                continue  # a phone number, not a name
+            words = [w for w in "".join(
+                ch if ch.isalpha() or ch.isspace() else " " for ch in label
+            ).lower().split() if len(w) > 1]
+            tokens.update(words)
+            if len(words) > 1:
+                tokens.add("".join(words))
+    return sorted(tokens)
+
+
+def _load_group_settings():
+    g = globals()
+    try:
+        paths = _omar_paths.get_paths()
+        user = _omar_paths.user_config_section("chat_analyzer")
+    except _omar_paths.DataDirError as e:
+        raise SystemExit(str(e))
+
+    for name, extra in user.get("extend", {}).items():
+        if name.startswith("_"):
+            continue  # "_comment"-style keys are ignored
+        if name not in _EXTENDABLE:
+            raise SystemExit(f"config.json: chat_analyzer.extend can't extend "
+                             f"'{name}'. Extendable: {', '.join(_EXTENDABLE)}.")
+        g[name] = list(g[name]) + list(extra)
+
+    for name, value in user.get("override", {}).items():
+        if name.startswith("_"):
+            continue
+        if not name.isupper() or name not in g:
+            raise SystemExit(f"config.json: unknown chat_analyzer setting '{name}'. "
+                             f"Valid names are the UPPER_CASE settings in chat_config.py.")
+        if isinstance(value, list) and isinstance(g[name], tuple):
+            value = tuple(value)  # e.g. NIGHT_OWL_HOURS
+        g[name] = value
+
+    g["EXTRA_STOPWORDS"] = list(dict.fromkeys(
+        list(g["EXTRA_STOPWORDS"]) + _name_tokens_from_identities(paths.identities)
+    ))
+
+
+_load_group_settings()
 
 
 def make_profile(**overrides):

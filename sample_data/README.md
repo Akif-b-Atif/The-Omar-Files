@@ -31,39 +31,41 @@ group chat.
 
 ## Using it
 
-From the project root:
+From the project root. To keep your real data safe, point the sample at its
+own throwaway data folder (or use the default `../data` if you haven't
+set up a real one yet):
 
 ```
-cp sample_data/01_sample_export_part1.txt Raw_Exports/
-cp sample_data/02_sample_export_part2.txt Raw_Exports/
-cp sample_data/identities.sample.json Pipeline/identities.json
 cd Pipeline
-pip install -r requirements.txt --break-system-packages
+pip install -r requirements.txt
+export OMAR_DATA_DIR=/tmp/omar-sample-data       # optional: keep the sample separate
+python3 control.py init-data
+cp ../sample_data/01_sample_export_part1.txt ../sample_data/02_sample_export_part2.txt "$OMAR_DATA_DIR/Raw_Exports/"
+cp ../sample_data/identities.sample.json "$OMAR_DATA_DIR/identities.json"
 python3 control.py merge 01_sample_export_part1.txt 02_sample_export_part2.txt
 python3 control.py reports
 ```
 
-That builds `Full_Archive.txt` / `Reports/Full_Archive.pdf` and every
-report (`Reports/chat_report.html`, `Reports/chat_report.pdf`,
-`Reports/arc_report.txt`, `Reports/arc_timeline.png`) — the archive at
-the project root, everything else in `Reports/` — exactly like a real
-run would. Open `chat_report.html` in a browser (or run the small
+That builds `Full_Archive.txt` and `Reports/` (`Full_Archive.pdf`,
+`chat_report.html`, `chat_report.pdf`, `arc_report.txt`,
+`arc_timeline.png`) inside the data folder, exactly like a real run
+would. (Without `OMAR_DATA_DIR`, they go in `../data/`.) Open `chat_report.html` in a browser (or run the small
 local server it tells you to, if the Explorer tab can't load its data
 over `file://`) to look around.
 
 `identities.sample.json` is just a starting `identities.json` with the
 five sample senders (and Kabir's phone-number alias) already resolved,
 copied in so you don't hit the interactive "who is this?" prompts
-`2_normalize_export.py` would otherwise ask about unfamiliar sender
+`normalize_export.py` would otherwise ask about unfamiliar sender
 labels the first time through. See "The identities.json model" in
 `Pipeline/TECHNICAL.md` for how that file works once you move on to
 your own real export.
 
 ## Trying it on your own chat afterward
 
-Once you're ready to use your own data: copy `Pipeline/identities.example.json`
-to `Pipeline/identities.json` instead (overwriting the sample one, or
-just clearing it out and starting fresh), drop your own export(s) into
+Once you're ready to use your own data: use a fresh data folder
+(`python3 control.py init-data` seeds one with `identities.example.json`
+as `identities.json`), drop your own export(s) into its
 `Raw_Exports/`, and run the same commands above with your own
 filenames. See the root `README.md`'s "Setting this up for your own
 chat" section for the full walkthrough.

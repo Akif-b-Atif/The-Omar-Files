@@ -1,19 +1,14 @@
-# Shared dependencies for every tool under Pipeline/Tools/ (arc_analyzer,
-# chat_analyzer, pdf_export). These three used to be separate repos, each
-# with its own requirements.txt that overlapped heavily with the others
-# (pandas/numpy/matplotlib for the two analyzers, reportlab for both PDF
-# exporters) — this single file replaces all of them.
+# Dependencies for the report tools under Pipeline/Tools/ (arc_analyzer,
+# chat_analyzer, pdf_export). One shared file for all three.
 #
-# Install once, from anywhere, with:
-#   pip install -r Pipeline/requirements.txt --break-system-packages
+# Install (a virtualenv keeps it out of your system Python):
+#   python3 -m venv .venv && source .venv/bin/activate
+#   pip install -r Pipeline/requirements.txt
 #
-# (Pipeline/scripts/*.py -- the monthly extract/normalize/merge steps --
-# use only the standard library and need nothing from this file.)
+# Pipeline/scripts/*.py (extract / normalize / merge) and control.py itself
+# use only the standard library and need nothing from this file -- you can
+# build and merge your archive without installing any of this.
 pandas>=2.0
 numpy>=1.24
 matplotlib>=3.7
 reportlab>=4.0
-
-# Dev-only: needed to run Pipeline/tests/, not the pipeline itself.
-# Install with: pip install -r Pipeline/requirements.txt --break-system-packages
-pytest>=7.0

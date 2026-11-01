@@ -13,7 +13,7 @@ talked about.
 ## Setup
 
 ```
-pip install -r ../../requirements.txt --break-system-packages
+pip install -r ../../requirements.txt
 ```
 
 (That's the one shared `requirements.txt` for every tool under
@@ -21,9 +21,9 @@ pip install -r ../../requirements.txt --break-system-packages
 from it, so installing it once covers all three.)
 
 No need to copy `Full_Archive.txt` anywhere — this reads it directly
-from the project root by default.
+from your data directory by default (see `Pipeline/omar_paths.py`).
 
-`run_new_month.py` runs this automatically every month. Run it directly
+`control.py` runs this automatically every month. Run it directly
 here only to regenerate this report on its own, without running the
 whole monthly routine — useful right after tuning the `CONFIG` values
 below.
@@ -34,17 +34,28 @@ below.
 python3 arc_analyzer.py
 ```
 
-With no arguments, this reads `Full_Archive.txt` from the project root
-and writes `arc_report.txt` and `arc_timeline.png` to `Reports/` at the
-project root (created automatically) — the two files meant for regular
+With no arguments, this reads `Full_Archive.txt` from the data directory
+and writes `arc_report.txt` and `arc_timeline.png` to its `Reports/`
+folder (created automatically) — the two files meant for regular
 reading. `arc_summary.csv` and `arc_summary.json` (the same data,
-structured, for further analysis) go into this module's own `data/`
-folder instead, since they're supplementary rather than something to
-read directly. Any of these can be overridden:
+structured, for further analysis) go into the data directory's
+`.cache/arc/` folder instead, since they're supplementary rather than
+something to read directly. Any of these can be overridden:
 
 ```
-python3 arc_analyzer.py path/to/input.txt -o path/to/report_dir --data-dir path/to/data_dir
+python3 arc_analyzer.py path/to/input.txt -o path/to/report_dir --cache-dir path/to/cache_dir
 ```
+
+**Tuning.** The `CONFIG` class in `arc_analyzer.py` holds generic
+defaults. To tune them for your chat, don't edit the file: add an
+`"arc_analyzer"` section to your data directory's `config.json`, e.g.
+`{"arc_analyzer": {"ROLLING_WINDOW_DAYS": 21, "ARC_PEAK_MULTIPLIER": 1.5}}`.
+Any `UPPER_CASE` setting in `CONFIG` can be overridden that way; a
+misspelled name stops the run with an error instead of being ignored.
+
+Group events (lines tagged `[SYSTEM]` by the normalizer) are dropped by
+checking the *sender* field only, so ordinary messages that happen to
+contain words like "left" or "added" are always counted.
 
 ## How segments are detected
 
@@ -138,8 +149,8 @@ right period — the matching is positional, not content-aware.
   hasn't been renamed yet just shows its generic default (e.g.
   `Miniarc-3: "Miniarc-3"`) until you edit `arc_report.txt` by hand and
   regenerate.
-- `data/arc_summary.csv` / `data/arc_summary.json` — the same segment
-  data, structured, for further analysis (this module's own folder).
+- `arc_summary.csv` / `arc_summary.json` (in the data directory's
+  `.cache/arc/`) — the same segment data, structured, for further analysis.
   Includes whichever name/description each segment had as of this run
   — `chat_analyzer` re-reads `arc_report.txt` directly rather than
   relying on this file, though, so a hand-edited name shows up there

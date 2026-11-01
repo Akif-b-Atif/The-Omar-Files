@@ -25,6 +25,7 @@ from common import (  # noqa: E402
     resolve_mentions,
     extract_slot_key,
     parse_export,
+    detect_date_order,
     MSG_LINE_PATTERNS,
 )
 
@@ -113,7 +114,7 @@ def test_normalize_time_falls_back_on_garbage():
 # ---------------------------------------------------------------------------
 
 def test_clean_line_strips_invisible_direction_markers():
-    line = "12/08/2024, 14:23 \u200e- Omar Khan: hi\n"
+    line = "12/08/2024, 14:23 \u200e- Alice Smith: hi\n"
     assert "\u200e" not in clean_line(line)
     assert clean_line(line).endswith("hi")
 
@@ -130,8 +131,8 @@ def test_is_placeholder_msg():
 
 
 def test_resolve_mentions():
-    alias_map = {"923001234567@s.whatsapp.net": "Omar"}
-    assert resolve_mentions("hey @923001234567 check this", alias_map) == "hey @Omar check this"
+    alias_map = {"923001234567@s.whatsapp.net": "Alice"}
+    assert resolve_mentions("hey @923001234567 check this", alias_map) == "hey @Alice check this"
     # Unknown number is left untouched.
     assert resolve_mentions("hey @999999999", alias_map) == "hey @999999999"
 
@@ -149,23 +150,23 @@ def _first_match(line):
 
 
 def test_plain_iso_style():
-    m = _first_match("2024-12-13 03:17:33 Ali Zaman: No wait")
+    m = _first_match("2024-12-13 03:17:33 Bob Jones: No wait")
     assert m is not None
-    assert m.group('sender') == "Ali Zaman"
+    assert m.group('sender') == "Bob Jones"
     assert m.group('msg') == "No wait"
 
 
 def test_android_style():
-    m = _first_match("12/08/2024, 14:23 - Omar Khan: Message text")
+    m = _first_match("12/08/2024, 14:23 - Alice Smith: Message text")
     assert m is not None
-    assert m.group('sender') == "Omar Khan"
+    assert m.group('sender') == "Alice Smith"
     assert m.group('msg') == "Message text"
 
 
 def test_iphone_style():
-    m = _first_match("[12/08/2024, 14:23:05] Omar Khan: Message text")
+    m = _first_match("[12/08/2024, 14:23:05] Alice Smith: Message text")
     assert m is not None
-    assert m.group('sender') == "Omar Khan"
+    assert m.group('sender') == "Alice Smith"
     assert m.group('msg') == "Message text"
 
 
@@ -175,29 +176,29 @@ def test_iphone_style():
 
 def test_parse_export_reassembles_multiline_message(tmp_path):
     raw = (
-        "2024-12-13 03:17:33 Ali Zaman: line one\n"
+        "2024-12-13 03:17:33 Bob Jones: line one\n"
         "line two\n"
-        "2024-12-13 03:18:00 Omar Khan: next message\n"
+        "2024-12-13 03:18:00 Alice Smith: next message\n"
     )
     f = tmp_path / "export.txt"
     f.write_text(raw, encoding="utf-8")
     messages = parse_export(f)
     assert len(messages) == 2
     assert messages[0]['msg'] == "line one\nline two"
-    assert messages[1]['sender'] == "Omar Khan"
+    assert messages[1]['sender'] == "Alice Smith"
 
 
 def test_parse_export_flags_leading_unparseable_junk(tmp_path):
-    raw = "some junk header with no timestamp\n2024-12-13 03:17:33 Ali Zaman: hi\n"
+    raw = "some junk header with no timestamp\n2024-12-13 03:17:33 Bob Jones: hi\n"
     f = tmp_path / "export.txt"
     f.write_text(raw, encoding="utf-8")
     messages = parse_export(f)
     assert messages[0]['unparsed'] is True
-    assert messages[1]['sender'] == "Ali Zaman"
+    assert messages[1]['sender'] == "Bob Jones"
 
 
 def test_parse_export_never_drops_lines(tmp_path):
-    raw = "2024-12-13 03:17:33 Ali Zaman: hi\ncompletely unrecognized standalone line\n"
+    raw = "2024-12-13 03:17:33 Bob Jones: hi\ncompletely unrecognized standalone line\n"
     # The second line has no leading dated line of its own and nothing
     # already open to attach to as a continuation only if it comes
     # first; here it attaches to the message above as a continuation,
@@ -214,9 +215,50 @@ def test_parse_export_never_drops_lines(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_extract_slot_key_from_archive_line():
-    key = extract_slot_key("13-Dec-2024, 03:17 - Ali Zaman: hello there")
-    assert key == ("13-Dec-2024", "03:17", "Ali Zaman")
+    key = extract_slot_key("13-Dec-2024, 03:17 - Bob Jones: hello there")
+    assert key == ("13-Dec-2024", "03:17", "Bob Jones")
 
 
 def test_extract_slot_key_none_for_system_line():
-    assert extract_slot_key("13-Dec-2024, 03:17 - Ali added Omar") is None
+    assert extract_slot_key("13-Dec-2024, 03:17 - Bob added Alice") is None
+
+
+# ---------------------------------------------------------------------------
+# Per-file day/month order inference
+# ---------------------------------------------------------------------------
+
+def _write(tmp_path, text):
+    path = tmp_path / "export.txt"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_one_unambiguous_line_settles_every_ambiguous_one(tmp_path):
+    path = _write(tmp_path, (
+        "04/08/2024, 10:00 - Alice Smith: ambiguous on its own\n"
+        "13/08/2024, 10:00 - Alice Smith: proves day-first\n"
+    ))
+    assert detect_date_order(path) is True
+    dates = [m["date"] for m in parse_export(path)]
+    assert dates == ["04-Aug-2024", "13-Aug-2024"]
+
+
+def test_month_first_file_is_detected(tmp_path):
+    path = _write(tmp_path, (
+        "04/08/2024, 10:00 - Alice Smith: ambiguous on its own\n"
+        "08/13/2024, 10:00 - Alice Smith: proves month-first\n"
+    ))
+    assert detect_date_order(path) is False
+    dates = [m["date"] for m in parse_export(path)]
+    assert dates == ["08-Apr-2024", "13-Aug-2024"]
+
+
+def test_no_evidence_falls_back_to_default(tmp_path):
+    path = _write(tmp_path, "04/08/2024, 10:00 - Alice Smith: only ambiguous dates\n")
+    assert detect_date_order(path) is None
+    assert parse_export(path)[0]["date"] == "04-Aug-2024"  # day-first default
+
+
+def test_iso_dates_do_not_count_as_evidence(tmp_path):
+    path = _write(tmp_path, "2024-12-13 03:17:33 Alice Smith: iso\n")
+    assert detect_date_order(path) is None

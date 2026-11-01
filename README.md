@@ -74,18 +74,29 @@ each tool's own `TECHNICAL.md` for implementation detail.
 at someone who just wants to read the finished archive, not run the
 pipeline.
 
+Two folders, side by side. This repo is **code only**; everything that
+belongs to your chat lives in a separate, private `data/` folder next to it:
+
 ```
-The-Omar-Files/
-├── Raw_Exports/         <- drop each month's WhatsApp export here
-├── Pipeline/            <- the code: control.py + every analysis tool
-├── Reports/             <- every generated report lands here (gitignored)
-├── sample_data/         <- fake export + identities to try the pipeline risk-free
-└── docs/                <- README/architecture/guide for this repo
+some-folder/
+├── The-Omar-Files/      <- this repo: code, docs, sample data (safe to publish)
+│   ├── Pipeline/        <- control.py + every analysis tool
+│   ├── sample_data/     <- fake export + identities to try the pipeline risk-free
+│   └── docs/
+└── data/                <- YOUR chat: its own private git repo, outside this one
+    ├── config.json      <- your word lists / thresholds
+    ├── identities.json  <- who is who (real names/numbers)
+    ├── Full_Archive.txt <- the archive itself
+    ├── Raw_Exports/     <- drop each month's WhatsApp export here
+    └── Reports/         <- every generated report lands here
 ```
 
-`Full_Archive.txt` itself is the one exception — it's written to the
-project root, not `Reports/`, since it's the actual archive (the thing
-this whole project exists to build and keep safe), not a derived report.
+Because the data folder sits outside the code repo, a stray `git add .`
+in here can never pick up your messages. `data/` is a git repo of its own,
+so your archive also gets a history: every merge is committed automatically
+(never pushed). Keep that repo private, and think twice before pushing it
+anywhere you don't control. Custom location? Use `--data-dir PATH` or the
+`OMAR_DATA_DIR` environment variable.
 
 ## Setting this up for your own chat
 
@@ -93,58 +104,78 @@ this whole project exists to build and keep safe), not a derived report.
    ```
    git clone <this-repo-url>
    cd The-Omar-Files
-   pip install -r Pipeline/requirements.txt --break-system-packages
+   python3 -m venv .venv && source .venv/bin/activate
+   pip install -r Pipeline/requirements.txt
    ```
-   Optional sanity check before going further:
+   (Merging and normalizing need nothing beyond the standard library;
+   the packages are for the reports.)
+2. **Create your data folder.**
    ```
-   cd Pipeline && python3 control.py doctor
+   cd Pipeline
+   python3 control.py init-data
    ```
-   Confirms Python's new enough, every dependency installed correctly,
-   and flags anything else worth fixing before you run a real export
-   through the pipeline.
-2. **Try it on the sample data first (optional but recommended).**
+   This makes `../data/` (next to the repo folder) with a starter
+   `identities.json` and `config.json`, and `git init`s it. Then check
+   everything's in order:
+   ```
+   python3 control.py doctor
+   ```
+3. **Try it on the sample data first (optional but recommended).**
    `sample_data/` has a small, fake WhatsApp export already shaped to
    produce real Arcs, running jokes, and per-person patterns, so you
    can see the actual reports before touching your own data. See
    [`sample_data/README.md`](sample_data/README.md) for the two-minute
    setup.
-3. **Create your identity file.** Copy the template and add your
-   group's actual people:
-   ```
-   cp Pipeline/identities.example.json Pipeline/identities.json
-   ```
-   `Pipeline/identities.json` is gitignored on purpose — it maps real
-   phone numbers to real names, so it should never leave your machine.
-   See "The identities.json model" in `Pipeline/TECHNICAL.md`.
-4. **Get your first export.** Export the chat from WhatsApp directly
+4. **Add your people.** Edit `data/identities.json` and list your
+   group's actual people. It maps real phone numbers to real names, which
+   is exactly why it lives in the private data folder. See "The
+   identities.json model" in `Pipeline/TECHNICAL.md`.
+5. **Get your first export.** Export the chat from WhatsApp directly
    (Chat → Export chat → Without media), or, for full history beyond
    what WhatsApp's export UI allows, see "Importing from msgstore.db"
    in `Pipeline/TECHNICAL.md` for pulling it from a phone backup.
-   Either way, it lands in `Raw_Exports/`.
-5. **Run it.**
+   Either way, it lands in `data/Raw_Exports/`.
+6. **Run it.**
    ```
-   cd Pipeline
    python3 control.py your_export.txt
    ```
-   This builds `Full_Archive.txt` at the project root and every report
-   in `Reports/` alongside it. See `docs/MONTHLY_GUIDE.md` for the
-   ongoing monthly routine and `Pipeline/control.py -h` for every
-   subcommand.
-6. **Customize the analysis (optional).** `Pipeline/Tools/chat_analyzer/chat_config.py`
-   controls what counts as a swear word, a laugh, a question, and a
-   handful of other tunable thresholds — edit it for your own group's
-   vocabulary. It also lists common first names to exclude from
-   word-frequency stats (otherwise the "most repeated words" leaderboard
-   is just whoever gets @-mentioned most); update that list for your
-   own group too.
+   This builds `data/Full_Archive.txt` and every report in
+   `data/Reports/`, then commits the new state to the data repo. See
+   `docs/MONTHLY_GUIDE.md` for the ongoing monthly routine and
+   `python3 control.py -h` for every subcommand.
+7. **Customize the analysis (optional).** The code ships with neutral
+   defaults. Your group's vocabulary and tuning go in `data/config.json`,
+   not in the code: extra swear/laugh words, thresholds, how sensitive
+   Arc detection is. See `Pipeline/config.example.json` for every option.
+   Your members' names are excluded from the word stats automatically,
+   straight from `identities.json`.
+
+### Upgrading from the older single-folder layout
+
+If you already have data inside the repo folder (`Raw_Exports/`,
+`Full_Archive.txt`, `Pipeline/identities.json`, ...):
+
+```
+cd Pipeline
+python3 control.py init-data
+python3 control.py migrate                       # copies + verifies by checksum
+python3 control.py doctor && python3 control.py reports
+python3 control.py migrate --remove-originals    # only once you're happy
+```
+
+Then move any edits you made to `chat_config.py` / arc settings into
+`data/config.json`. Back up the old folder first: it's the only copy until
+you've verified the new one.
 
 ## What's not in this repo
 
-Everything specific to the actual group I built this for — the raw
-exports, the merged archive, every generated report, the identity/name
-mapping, and the cached analysis data — is excluded via `.gitignore`.
-What's here is the pipeline itself: the code, the docs, and a fake
-`identities.example.json` to get a new group started. See the "note on
+Anything specific to a real group: raw exports, the merged archive,
+reports, the identity/name mapping, caches, and personal word lists all
+live in your separate data folder, never in this repo. The code repo's
+`.gitignore`, a CI check (`Pipeline/tools_dev/check_no_private_data.py`),
+and an optional pre-commit hook all back that up. What's here is the
+pipeline itself: the code, the docs, fake `sample_data/`, and template
+`identities.example.json` / `config.example.json` files. See the "note on
 privacy" at the end of `docs/ARCHITECTURE.md` for the full reasoning.
 
 ## Contributing

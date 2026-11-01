@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-2_normalize_export.py
+normalize_export.py
 -----------------------
 Takes one raw WhatsApp export and produces a normalized version where
 every sender label has been replaced with their canonical identity name.
@@ -17,18 +17,20 @@ right there in the terminal, and identities.json is updated immediately
 
 Usage:
     cd Pipeline/scripts
-    python 2_normalize_export.py ../../Raw_Exports/2026-09_raw.txt
+    python normalize_export.py <data dir>/Raw_Exports/2026-09_raw.txt
 
 Output:
-    ../normalized_exports/2026-09_normalized.txt
+    <data dir>/normalized_exports/2026-09_normalized.txt
 """
 import sys
 from pathlib import Path
-from common import parse_export, load_identities, save_identities, is_media_or_deleted, warn_if_suspicious, resolve_mentions
 
-PIPELINE_DIR = Path(__file__).parent.parent
-IDENTITIES_PATH = PIPELINE_DIR / "identities.json"
-NORMALIZED_DIR = PIPELINE_DIR / "normalized_exports"
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import omar_paths  # noqa: E402
+from common import (  # noqa: E402
+    parse_export, load_identities, save_identities, is_media_or_deleted,
+    warn_if_suspicious, resolve_mentions,
+)
 
 
 def resolve_sender(sender, data, alias_map, skipped_cache):
@@ -68,13 +70,20 @@ def resolve_sender(sender, data, alias_map, skipped_cache):
 
 def main():
     if len(sys.argv) != 2:
-        print("Usage: python 2_normalize_export.py <raw_export.txt>")
+        print("Usage: python normalize_export.py <raw_export.txt>")
         sys.exit(1)
 
     raw_path = Path(sys.argv[1])
     if not raw_path.exists():
         print(f"File not found: {raw_path}")
         sys.exit(1)
+
+    try:
+        paths = omar_paths.require_paths()
+    except omar_paths.DataDirError as e:
+        sys.exit(str(e))
+    IDENTITIES_PATH = paths.identities
+    NORMALIZED_DIR = paths.normalized
 
     data, alias_map = load_identities(IDENTITIES_PATH)
 
@@ -111,7 +120,7 @@ def main():
 
     save_identities(data, IDENTITIES_PATH)
 
-    NORMALIZED_DIR.mkdir(exist_ok=True)
+    NORMALIZED_DIR.mkdir(parents=True, exist_ok=True)
     out_name = raw_path.stem.replace('_raw', '') + '_normalized.txt'
     out_path = NORMALIZED_DIR / out_name
     with open(out_path, 'w', encoding='utf-8') as f:

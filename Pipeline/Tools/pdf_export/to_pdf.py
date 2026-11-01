@@ -10,8 +10,9 @@ Usage:
     python3 to_pdf.py [input.txt] [output.pdf]
 
 Both arguments are optional:
-    input.txt   defaults to the repo's own Full_Archive.txt
-    output.pdf  defaults to Reports/Full_Archive.pdf at the project root
+    input.txt   defaults to Full_Archive.txt in your data directory
+    output.pdf  defaults to Reports/Full_Archive.pdf in your data directory
+                (see Pipeline/omar_paths.py for how that directory is found)
 
 Requires NotoSans-Regular.ttf in the shared Tools/fonts/ folder. That font
 is bundled with this repo (see Tools/fonts/) and shared with chat_analyzer's
@@ -38,9 +39,15 @@ from xml.sax.saxutils import escape
 
 # This file lives at Pipeline/Tools/pdf_export/to_pdf.py.
 SCRIPT_DIR = Path(__file__).resolve().parent
-REPO_ROOT = SCRIPT_DIR.parents[2]
-DEFAULT_INPUT = REPO_ROOT / "Full_Archive.txt"
-DEFAULT_OUTPUT = REPO_ROOT / "Reports" / "Full_Archive.pdf"
+sys.path.insert(0, str(SCRIPT_DIR.parents[1]))  # Pipeline/, for omar_paths
+import omar_paths  # noqa: E402
+
+try:
+    _PATHS = omar_paths.get_paths()
+except omar_paths.DataDirError as _e:
+    sys.exit(str(_e))
+DEFAULT_INPUT = _PATHS.archive
+DEFAULT_OUTPUT = _PATHS.reports / "Full_Archive.pdf"
 # Shared with chat_analyzer's pdf_report.py — one font folder for the
 # whole Pipeline instead of a separate copy per tool.
 FONT_DIR = SCRIPT_DIR.parent / "fonts"

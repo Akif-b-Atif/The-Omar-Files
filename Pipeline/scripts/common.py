@@ -1,7 +1,7 @@
 """
 common.py — shared helpers for the archive pipeline.
-Not run directly. Imported by 1_extract_identities.py, 2_normalize_export.py,
-and 3_merge_export.py.
+Not run directly. Imported by extract_identities.py, normalize_export.py,
+and merge_export.py.
 
 If your exports don't parse correctly, this is the file to fix — see
 "If the parser doesn't match an export" in Pipeline/TECHNICAL.md.
@@ -15,12 +15,12 @@ from datetime import datetime
 # ---------------------------------------------------------------------------
 
 # Standard WhatsApp Android export line looks like:
-#   12/08/2024, 14:23 - Omar Khan: Message text
+#   12/08/2024, 14:23 - Alice Smith: Message text
 # iPhone exports often look like:
-#   [12/08/2024, 14:23:05] Omar Khan: Message text
+#   [12/08/2024, 14:23:05] Alice Smith: Message text
 # The plain/ISO style — no comma, no dash, no brackets — is the default
 # both a msgstore.db export and a typical raw export in this project use:
-#   2024-12-13 03:17:33 Ali Zaman: No wait
+#   2024-12-13 03:17:33 Bob Jones: No wait
 # All patterns are tried, in order (plain style first, since it's the
 # default), for every line. The date portion of every pattern below
 # accepts any of these separators and any digit count for day/month/year
@@ -51,7 +51,7 @@ MSG_LINE_PATTERNS = [
 
 EVENT_LINE_PATTERNS = [
     # Plain/ISO style event line, no "sender:" part at all —
-    # e.g. "2025-08-04 09:00:00 Omar added Ahmed". Tried only after every
+    # e.g. "2025-08-04 09:00:00 Alice added Bob". Tried only after every
     # MSG_LINE_PATTERNS above has failed to match, so a normal message
     # line is never miscategorized as an event.
     {
@@ -92,7 +92,7 @@ MEDIA_PATTERNS = [
 # never be treated as a genuinely different message from the real
 # content the same (date, time, sender) slot may already have in the
 # archive from an earlier export (see is_placeholder_msg / merge logic
-# in 3_merge_export.py that uses this).
+# in merge_export.py that uses this).
 PLACEHOLDER_PATTERNS = [
     "waiting for this message",
 ]
@@ -246,6 +246,68 @@ def parse_flexible_date(date_str, prefer_day_first=True):
         return _validate_ymd(year, nums[month_i], nums[day_i])
 
 
+def _day_month_values(date_str):
+    """For a purely numeric date whose day/month ORDER is a genuine
+    question (year not first, no month name), returns the two
+    (first, second) values that are the day and month in some order.
+    Returns None for anything where order isn't in question."""
+    parts = _split_date_parts(date_str)
+    if len(parts) != 3 or any(p[:3].lower() in MONTH_NAMES for p in parts):
+        return None
+    try:
+        nums = [int(p) for p in parts]
+    except ValueError:
+        return None
+    four = [i for i, p in enumerate(parts) if len(p) == 4]
+    if four:
+        year_i = four[0]
+        if year_i == 0:
+            return None  # ISO-style: month, day order is by convention
+    else:
+        year_i = 0 if nums[0] > 31 else 2
+        if year_i == 0:
+            return None
+    a, b = [nums[i] for i in range(3) if i != year_i]
+    return a, b
+
+
+def detect_date_order(path):
+    """Looks at EVERY dated line in a raw export and works out, once for
+    the whole file, whether it writes dates day-first (13/12/2024) or
+    month-first (12/13/2024).
+
+    One value over 12 in the first slot proves day-first; one in the
+    second slot proves month-first -- and an export is always written by
+    a single phone in a single locale, so that proof applies to every
+    other line in it too, including the ones like 04/08/2024 that are
+    ambiguous on their own. Returns True (day-first), False
+    (month-first), or None when the file gives no evidence (every date
+    is ambiguous) or contradicts itself -- callers then fall back to the
+    per-pattern defaults, exactly as before."""
+    day_first_evidence = month_first_evidence = 0
+    pats = [pat['regex'] for pat in MSG_LINE_PATTERNS + EVENT_LINE_PATTERNS]
+    with open(path, 'r', encoding='utf-8', errors='replace') as f:
+        for raw_line in f:
+            line = clean_line(raw_line)
+            for rx in pats:
+                m = rx.match(line)
+                if not m:
+                    continue
+                vals = _day_month_values(m.group('date'))
+                if vals:
+                    a, b = vals
+                    if a > 12 and b <= 12:
+                        day_first_evidence += 1
+                    elif b > 12 and a <= 12:
+                        month_first_evidence += 1
+                break
+    if day_first_evidence and not month_first_evidence:
+        return True
+    if month_first_evidence and not day_first_evidence:
+        return False
+    return None
+
+
 def normalize_date(raw_date, prefer_day_first=True):
     """Reformats a date string to OUTPUT_DATE_FMT using
     parse_flexible_date(). If it can't be resolved, the original string
@@ -356,7 +418,7 @@ def warn_if_suspicious(path, messages, raw_line_count):
               f"That's a low match rate — worth spot-checking the output. ***\n")
 
 
-def parse_export(path):
+def parse_export(path, day_first=None):
     """
     Parses a raw WhatsApp .txt export (or a msgstore.db extraction) into
     a list of dicts: {date, time, sender, msg, unparsed}
@@ -366,9 +428,17 @@ def parse_export(path):
     verbatim rather than dropped; nothing is ever silently discarded.
     Multi-line messages (message bodies containing literal newlines) are
     reassembled into a single entry.
+
+    day_first: how to read ambiguous dates like 04/08/2024. Left as None
+    (the default), it's worked out once per FILE by detect_date_order(),
+    so a single unambiguous line like 13/12/2024 settles every ambiguous
+    one in the same export. If the file gives no evidence either way,
+    each line pattern's own default applies, as before.
     """
     messages = []
     current = None
+    if day_first is None:
+        day_first = detect_date_order(path)
 
     with open(path, 'r', encoding='utf-8', errors='replace') as f:
         for raw_line in f:
@@ -383,7 +453,8 @@ def parse_export(path):
                     if current:
                         messages.append(current)
                     current = {
-                        'date': normalize_date(m.group('date'), pat['prefer_day_first']),
+                        'date': normalize_date(m.group('date'),
+                                       pat['prefer_day_first'] if day_first is None else day_first),
                         'time': normalize_time(m.group('time')),
                         'sender': m.group('sender').strip(),
                         'msg': m.group('msg').strip(),
@@ -400,7 +471,8 @@ def parse_export(path):
                     if current:
                         messages.append(current)
                     current = {
-                        'date': normalize_date(m.group('date'), pat['prefer_day_first']),
+                        'date': normalize_date(m.group('date'),
+                                       pat['prefer_day_first'] if day_first is None else day_first),
                         'time': normalize_time(m.group('time')),
                         'sender': None,
                         'msg': m.group('event').strip(),
@@ -438,7 +510,7 @@ def parse_export(path):
 # ---------------------------------------------------------------------------
 # Parsing an already-normalized file (Full_Archive.txt itself, or a
 # ../normalized_exports/*.txt file) back into structured blocks. Used by
-# 3_merge_export.py to figure out chronological order and duplicates —
+# merge_export.py to figure out chronological order and duplicates —
 # never used to alter any text, only to read it.
 # ---------------------------------------------------------------------------
 
@@ -461,7 +533,7 @@ def extract_slot_key(block_text):
     This is intentionally coarser than exact-text matching: two real,
     distinct messages from the same sender in the same minute will
     collide on this key. That's fine for its one use (see
-    3_merge_export.py) — recognizing "the archive already has *some*
+    merge_export.py) — recognizing "the archive already has *some*
     content in this slot" so a "waiting for this message" placeholder
     from a re-export doesn't get inserted as a bogus duplicate next to
     the real content that's already archived.
@@ -479,7 +551,7 @@ def extract_slot_key(block_text):
 def parse_normalized_blocks(path):
     """
     Parses a file already in the normalized/archive output format
-    (produced by 2_normalize_export.py, or Full_Archive.txt itself)
+    (produced by normalize_export.py, or Full_Archive.txt itself)
     into a list of blocks:
         {'datetime': datetime object or None, 'text': the block's exact
          original text, verbatim, possibly spanning multiple physical

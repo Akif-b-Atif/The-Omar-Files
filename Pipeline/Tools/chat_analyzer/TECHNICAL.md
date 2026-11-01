@@ -6,7 +6,7 @@ interactive search/explorer tab) and a matching shareable PDF.
 ## 1. Setup
 
 ```
-pip install -r ../../requirements.txt --break-system-packages
+pip install -r ../../requirements.txt
 ```
 
 (That's the one shared `requirements.txt` for every tool under
@@ -21,15 +21,36 @@ required; the PDF still renders fine without it, just without emoji
 glyphs.
 
 No need to copy `Full_Archive.txt` anywhere — this reads it directly
-from the project root by default.
+from your data directory by default (see `Pipeline/omar_paths.py`).
 
-`run_new_month.py` runs this automatically every month. Run it directly
+`control.py` runs this automatically every month. Run it directly
 here only to regenerate this report on its own, without running the
-whole monthly routine — useful right after editing `chat_config.py`.
+whole monthly routine — useful right after changing your `config.json`.
 
-## 2. Edit the word lists (do this first)
+## 2. Add your group's words (do this first)
 
-Open `chat_config.py` and fill in:
+`chat_config.py` ships generic defaults that work for any English-ish
+chat; don't edit it for your own group. Put your additions and overrides
+in your data directory's `config.json` instead (template:
+`Pipeline/config.example.json`), so they stay private and survive code
+updates:
+
+```json
+{"chat_analyzer": {
+  "extend":   {"SWEAR_WORDS": ["..."], "LAUGH_WORDS": ["..."]},
+  "override": {"LAST_PERIOD_DAYS": 180, "TOP_N": 20}
+}}
+```
+
+`extend` adds to a list setting (`SWEAR_WORDS`, `LAUGH_WORDS`,
+`LAUGH_REGEX_PATTERNS`, `QUESTION_STARTERS`, `EXTRA_STOPWORDS`);
+`override` replaces any `UPPER_CASE` setting. An unknown name stops the
+run with an error. **Member names need no entry anywhere**: every name and
+name-like alias in `identities.json` is added to `EXTRA_STOPWORDS`
+automatically when `chat_config` loads, so word stats never fill up with
+your own friends' names.
+
+The settings you can tune:
 - `SWEAR_WORDS` — words counted for the "curses most" stats
 - `LAUGH_WORDS` / `LAUGH_REGEX_PATTERNS` — already has generic patterns
   (haha, lol, lmao, hehe, jaja...) that catch stretched-out versions
@@ -46,7 +67,7 @@ Open `chat_config.py` and fill in:
   `TOP_N`, `SIGNATURE_MIN_MESSAGES`, `SIGNATURE_TOP_N_PER_PERSON`,
   `CONVERSATION_GAP_HOURS`, night-owl/early-bird hour ranges.
 
-This can be re-run as many times as needed after editing this file.
+This can be re-run as many times as needed after editing `config.json`.
 
 ## 3. Run it
 
@@ -56,7 +77,7 @@ python3 analyze_chat.py
 
 Optional flags:
 ```
-python3 analyze_chat.py --input ../../../Full_Archive.txt --outdir ../../.. --min-messages 10
+python3 analyze_chat.py --input path/to/Full_Archive.txt --outdir path/to/Reports --min-messages 10
 ```
 `--min-messages` excludes people with very few messages (e.g. someone
 who was added/left quickly) from the per-person leaderboards. If nobody
@@ -112,9 +133,9 @@ python3 analyze_chat.py --sections overview,timing,leaderboards,individuals,word
 | `--top-n N` | Override `TOP_N` (size of the "most repeated" leaderboards) for this run only. |
 | `--signature-min-messages N` | Override `SIGNATURE_MIN_MESSAGES` for this run only. |
 | `--signature-top-n N` | Override `SIGNATURE_TOP_N_PER_PERSON` for this run only. |
-| `--last-period-days N` | Size of the built-in "last N days" section (default from `LAST_PERIOD_DAYS` in `chat_config.py`, normally 30). |
-| `--arc-summary PATH` | Path to arc_analyzer's `arc_summary.json` (default: `../arc_analyzer/data/arc_summary.json`). Only used by the "Arcs & Mini-arcs" section. |
-| `--arc-report PATH` | Path to `arc_report.txt` (default: `Reports/` at the project root), re-read fresh on every run so a hand-edited name/description shows up even without re-running `arc_analyzer.py` first. |
+| `--last-period-days N` | Size of the built-in "last N days" section (default from `LAST_PERIOD_DAYS` in `chat_config.py`, 365 unless you override it). |
+| `--arc-summary PATH` | Path to arc_analyzer's `arc_summary.json` (default: `.cache/arc/arc_summary.json` in the data directory). Only used by the "Arcs & Mini-arcs" section. |
+| `--arc-report PATH` | Path to `arc_report.txt` (default: `Reports/` in the data directory), re-read fresh on every run so a hand-edited name/description shows up even without re-running `arc_analyzer.py` first. |
 
 Valid `--sections` values: `overview`, `timing`, `leaderboards`,
 `individuals`, `words`, `mentions`, `funfacts`, `lastperiod`, `arcs`, or
@@ -136,7 +157,7 @@ useful for no benefit.
 ## 4. Output
 
 `chat_report.html`, `chat_report.pdf`, and `chat_search_data.json` are
-written to `Reports/` at the project root (or a custom `--outdir`),
+written to `Reports/` in the data directory (or a custom `--outdir`),
 right next to every other generated report — unless `--out-name` is
 set, in which case the `.html`/`.pdf` use that base name instead (the
 search JSON is always `chat_search_data.json`, since the HTML's
@@ -160,8 +181,8 @@ Explorer tab fetches that exact filename):
   "Arcs & Mini-arcs" follows as "Part Three" — one self-contained
   sub-report with its own cover per arc/mini-arc.
 
-Chart images used to build the HTML/PDF are cached in `_chart_cache/`
-next to this script — that folder isn't a report itself, just working
+Chart images used to build the HTML/PDF are cached in the data
+directory's `.cache/chart_cache/` — that folder isn't a report itself, just working
 files, and isn't needed once the HTML/PDF exist. Files from the main
 report, the "last N days" section, and each arc/mini-arc use different
 filename prefixes in that cache (`arc1_`, `arc2_`, ...) so none of them

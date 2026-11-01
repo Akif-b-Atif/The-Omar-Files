@@ -47,16 +47,17 @@ it.
 
 ## Testing your change
 
-There's no formal test suite yet (an early contribution here would be
-very welcome). In the meantime:
+There's a pytest suite (see `Pipeline/tests/README.md`); CI runs it on
+every push. Before opening a PR:
 
-1. Use a small, throwaway export — a test group chat with a handful of
-   fake messages works fine — rather than real personal data.
-2. Run the relevant step of the pipeline directly (`python3
-   control.py <command>` from inside `Pipeline/`) and check the output
-   by hand.
+1. Run it: `pip install -r Pipeline/requirements-dev.txt` then
+   `python3 -m pytest Pipeline/tests`. The tests never touch real data:
+   they point the pipeline at a throwaway data directory.
+2. Use a small, throwaway export — a test group chat with a handful of
+   fake messages works fine — rather than real personal data, and add a
+   test for what you fixed.
 3. If you touched `common.py`'s parsing patterns, run
-   `1_extract_identities.py` and `2_normalize_export.py` against a few
+   `extract_identities.py` and `normalize_export.py` against a few
    different export formats to make sure you haven't broken an
    existing one while fixing another.
 

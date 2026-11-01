@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-1_extract_identities.py
+extract_identities.py
 ------------------------
 ONE-TIME (or occasional bulk) tool: scans one or more raw export .txt files
 for sender labels that aren't yet in identities.json, and asks you — once —
@@ -9,24 +9,28 @@ what canonical name each one belongs to.
 This is meant for the big initial port.txt, where there may be dozens of
 unfamiliar numbers/labels at once and you want to plow through them all in
 one sitting. For a normal monthly export, you don't need this script —
-2_normalize_export.py already asks about unknown senders as it goes.
+normalize_export.py already asks about unknown senders as it goes.
 
 Usage:
     cd Pipeline/scripts
-    python 1_extract_identities.py ../../Raw_Exports/00_initial_port.txt
+    python extract_identities.py <data dir>/Raw_Exports/00_initial_port.txt
 """
 import sys
 from pathlib import Path
-from common import parse_export, load_identities, save_identities, warn_if_suspicious
-
-IDENTITIES_PATH = Path(__file__).parent.parent / "identities.json"
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import omar_paths  # noqa: E402
+from common import parse_export, load_identities, save_identities, warn_if_suspicious  # noqa: E402
 
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: python 1_extract_identities.py <raw_export.txt> [more files...]")
+        print("Usage: python extract_identities.py <raw_export.txt> [more files...]")
         sys.exit(1)
 
+    try:
+        IDENTITIES_PATH = omar_paths.require_paths().identities
+    except omar_paths.DataDirError as e:
+        sys.exit(str(e))
     data, alias_map = load_identities(IDENTITIES_PATH)
 
     unknown = {}

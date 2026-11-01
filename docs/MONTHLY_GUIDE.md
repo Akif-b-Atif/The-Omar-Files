@@ -6,7 +6,7 @@ What I do every month to keep the archive up to date. In case I forget.
 
 1. Export the group chat from WhatsApp as a `.txt` file.
 
-2. Put it in `Raw_Exports/`, named like:
+2. Put it in `data/Raw_Exports/` (the private data folder next to the repo, see the README), named like:
 
        2026-09_raw.txt
 
@@ -17,7 +17,7 @@ What I do every month to keep the archive up to date. In case I forget.
 
        python3 control.py 2026-09_raw.txt
 
-   A bare filename like that is found automatically in `Raw_Exports/` —
+   A bare filename like that is found automatically in `data/Raw_Exports/` —
    no need to type the full path. No command word needed either — a
    bare filename (or nothing at all) is always treated as `update`,
    the do-everything command (see "The control panel" below).
@@ -58,17 +58,17 @@ it. All of these are run from inside `Pipeline/`:
 | Rebuild pdf + chat + arc together, no merge         | `python3 control.py reports` |
 
 Bare filenames (like `2026-09_raw.txt` above) are always looked up
-automatically inside `Raw_Exports/` — a full path also works if the
+automatically inside `data/Raw_Exports/` — a full path also works if the
 file lives somewhere else. `merge` accepts more than one filename at
 once; they're normalized and merged in one after another and end up in
 the archive exactly as if they'd been a single combined export, since
 merging places every message by its own timestamp regardless of what
 file it came from or what order the files were listed in.
 
-`run_new_month.py` still works exactly as before (it's now a thin
-wrapper around `control.py update`) if that's the name I've got
-memorized — but `control.py` is the one to reach for going forward,
-since it covers every other case too. See `Pipeline/control.py`'s own
+After a successful merge, the new state is committed to the data
+folder's own git repo automatically (never pushed; `--no-commit` skips
+it). `git -C ../data log` is the undo history of the archive. (`run_new_month.py`
+is gone: `control.py` does everything it did.) See `Pipeline/control.py`'s own
 docstring (`python3 control.py -h`, or open the file) for the full
 rundown, including the `--min-messages` option on `chat`/`reports`.
 
@@ -99,16 +99,17 @@ The export's format doesn't match what the scripts expect. See "If the
 parser doesn't match an export" in `Pipeline/TECHNICAL.md`.
 
 **A date looks wrong (day and month swapped, wrong year, etc.)**
-The normalizer tries to resolve dates in whatever format they're
-written, but a date like "03/04/25" is genuinely ambiguous (3 April or
-4 March?) with no way to know for certain. See "How dates are resolved"
+The normalizer works out day-first vs. month-first once per export file:
+one unambiguous line like "13/04/25" settles every ambiguous one like
+"03/04/25" in the same file. Only a file where EVERY date is ambiguous
+falls back to a guess (day-first). See "How dates are resolved"
 in `Pipeline/TECHNICAL.md` for exactly how it decides, and how to
 correct one by hand if it guessed wrong.
 
 **Lines tagged `[UNRESOLVED]`**
 That sender was skipped during normalization. I run
-`scripts/2_normalize_export.py` on that raw file again once I know who
-they are, or edit `Pipeline/identities.json` by hand.
+`scripts/normalize_export.py` on that raw file again once I know who
+they are, or edit `data/identities.json` by hand.
 
 **Lines tagged `[UNPARSED - review this line]`**
 The line didn't match any known format. It's kept as-is rather than

@@ -1,0 +1,40 @@
+Split code and data into two repos; make config generic; fix merge/date bugs
+
+Layout
+- The code repo now holds code only. Everything chat-specific (archive,
+  raw exports, identities, reports, caches, personal settings) lives in a
+  separate private `data/` folder next to it, found via --data-dir,
+  $OMAR_DATA_DIR, or the sibling default. A data dir inside the code repo
+  is refused.
+- New Pipeline/omar_paths.py is the single source of truth for paths.
+- control.py: new `init-data` and `migrate` commands; `doctor` checks the
+  data dir, config.json and leftover in-repo data; after each merge the
+  new state is committed to the data repo (never pushed; --no-commit).
+- Renamed scripts to importable names (extract_identities, normalize_export,
+  merge_export); removed the legacy run_new_month.py.
+
+Generic config
+- chat_config.py and arc_analyzer CONFIG now ship neutral defaults.
+  Group-specific words and tuning go in data/config.json (see
+  Pipeline/config.example.json). Member names are added to the stopword
+  list automatically from identities.json.
+- Removed real names, personal word lists and sample names from code,
+  tests and docs.
+
+Fixes
+- merge: duplicate detection is now count-based, so identical messages
+  sent in the same minute are no longer collapsed into one.
+- merge: archive and merge log are written atomically; merge log records
+  a sha256 of each merged file.
+- dates: day/month order is inferred once per export file instead of
+  guessed per line.
+- arc_analyzer: only [SYSTEM] senders are dropped; messages merely
+  containing words like "left" or "added" were being discarded.
+- .gitignore: `msgstore*` no longer hides msgstore_export.py.
+
+Tooling
+- GitHub Actions: tests on Python 3.9/3.12 plus a tracked-private-data
+  check (Pipeline/tools_dev/check_no_private_data.py, also usable as a
+  pre-commit hook).
+- Tests: 75 (was 49), isolated from any real data dir.
+- requirements split into runtime and dev; docs updated throughout.

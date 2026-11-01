@@ -34,16 +34,16 @@ def _records(messages):
 
 def test_media_placeholders_and_waiting_notice_are_not_lexical_text():
     records = _records([
-        (0, "Akif", "<sticker omitted>"),
-        (1, "Akif", "<image omitted>"),
-        (2, "Akif", "<GIF omitted>"),
-        (3, "Akif", "<video omitted> Viva mein phat-te hue"),
-        (4, "Akif", "<forwarded image omitted>"),
-        (5, "Akif", "<album omitted>"),
-        (6, "Akif", "<voice message omitted>"),
-        (7, "Akif", "<forwarded video omitted>"),
-        (8, "Akif", "Waiting for this message. This may take a while."),
-        (9, "Akif", "[UNPARSED - review this line] raw status text"),
+        (0, "Alice", "<sticker omitted>"),
+        (1, "Alice", "<image omitted>"),
+        (2, "Alice", "<GIF omitted>"),
+        (3, "Alice", "<video omitted> check this out right now"),
+        (4, "Alice", "<forwarded image omitted>"),
+        (5, "Alice", "<album omitted>"),
+        (6, "Alice", "<voice message omitted>"),
+        (7, "Alice", "<forwarded video omitted>"),
+        (8, "Alice", "Waiting for this message. This may take a while."),
+        (9, "Alice", "[UNPARSED - review this line] raw status text"),
     ])
     df = build_dataframe(records)
 
@@ -51,20 +51,20 @@ def test_media_placeholders_and_waiting_notice_are_not_lexical_text():
         True, True, True, True, True, True, True, True, False, False
     ]
     assert df["analysis_text"].tolist() == [
-        "", "", "", "Viva mein phat-te hue", "", "", "", "", "", "",
+        "", "", "", "check this out right now", "", "", "", "", "", "",
     ]
     assert df["is_real_text"].tolist() == [
         False, False, False, True, False, False, False, False, False, False
     ]
     assert df.loc[3, "word_count"] == 5
-    assert df.loc[3, "text"] == "<video omitted> Viva mein phat-te hue"
+    assert df.loc[3, "text"] == "<video omitted> check this out right now"
 
 
 def test_known_multiword_unicode_mentions_are_attributed_and_removed():
-    participants = ["Akif Bin Atif", "Aarij-ul-Eman", "Other"]
-    aliases = {"señor aarij": "Aarij-ul-Eman"}
+    participants = ["Alice Smith", "Bob-Jones", "Other"]
+    aliases = {"señor bob": "Bob-Jones"}
     pattern, _ = _compile_mention_patterns(participants, aliases)
-    text = "@Akif Bin Atif @Señor Aarij @all"
+    text = "@Alice Smith @Señor Bob @all"
 
     assert _clean_for_wordphrase(text, pattern).strip() == ""
     real = pd.DataFrame([{
@@ -73,16 +73,16 @@ def test_known_multiword_unicode_mentions_are_attributed_and_removed():
     }])
     given, received, pairs = _compute_mentions(real, participants, aliases)
     assert given["Other"] == 2
-    assert received["Akif Bin Atif"] == 1
-    assert received["Aarij-ul-Eman"] == 1
+    assert received["Alice Smith"] == 1
+    assert received["Bob-Jones"] == 1
     assert sum(received.values()) == 2
     assert len(pairs) == 2
 
 
 def test_known_alias_for_filtered_participant_is_removed_but_not_attributed():
-    aliases = {"señor aarij": "Aarij-ul-Eman"}
+    aliases = {"señor bob": "Bob-Jones"}
     df = build_dataframe(_records([
-        (0, "Other", "@Señor Aarij hello"),
+        (0, "Other", "@Señor Bob hello"),
     ]))
     prepared = prepare_lexical_text(df, ["Other"], aliases)
     _, received, pairs = _compute_mentions(df, ["Other"], aliases)
@@ -93,8 +93,8 @@ def test_known_alias_for_filtered_participant_is_removed_but_not_attributed():
 
 
 def test_ambiguous_first_name_is_not_attributed_and_lexical_word_count_excludes_mentions():
-    participants = ["Sam One", "Sam Two", "Aarij-ul-Eman"]
-    aliases = {"nickname": "Aarij-ul-Eman"}
+    participants = ["Sam One", "Sam Two", "Bob-Jones"]
+    aliases = {"nickname": "Bob-Jones"}
     df = build_dataframe(_records([
         (0, "Sam One", "@Sam hello"),
         (1, "Sam One", "@nickname welcome"),
@@ -103,7 +103,7 @@ def test_ambiguous_first_name_is_not_attributed_and_lexical_word_count_excludes_
 
     assert prepared["word_count"].tolist() == [1, 1]
     _, received, _ = _compute_mentions(df, participants, aliases)
-    assert received == {"Aarij-ul-Eman": 1}
+    assert received == {"Bob-Jones": 1}
 
 
 def test_median_reply_gap_ignores_same_sender_double_texts():
@@ -119,14 +119,14 @@ def test_median_reply_gap_ignores_same_sender_double_texts():
 
 def test_captioned_media_remains_searchable():
     df = build_dataframe(_records([
-        (0, "A", "<video omitted> Viva mein phat-te hue"),
+        (0, "A", "<video omitted> check this out right now"),
     ]))
     data = build_search_data(
         df, ["A"], {}, {}, {"by_hour": {}, "by_weekday": {}}
     )
 
     assert data["flags"] == [1]
-    assert data["texts"] == ["Viva mein phat-te hue"]
+    assert data["texts"] == ["check this out right now"]
     assert compute_overall(df)["total_text_messages"] == 0
     assert compute_overall(df)["total_media"] == 1
 
@@ -141,20 +141,20 @@ def test_unknown_album_and_forwarded_markers_do_not_become_phrases():
         (5, "A", "[Forwarded]"),
         (6, "A", "[Forwarded] <image omitted>"),
         (7, "A", "[Forwarded] <video omitted>"),
-        (8, "A", "[Forwarded] <video omitted> Viva mein phat-te hue"),
+        (8, "A", "[Forwarded] <video omitted> check this out right now"),
     ]))
 
     assert df["is_media"].tolist() == [
         True, True, True, True, False, False, True, True, True
     ]
     assert df["analysis_text"].tolist() == [
-        "", "", "", "", "", "", "", "", "Viva mein phat-te hue"
+        "", "", "", "", "", "", "", "", "check this out right now"
     ]
     assert df["is_real_text"].tolist() == [
         False, False, False, False, False, False, False, False, True
     ]
     phrases = _build_phrase_index(df, cfg)["counter"]
-    assert phrases == {"viva mein phat te hue": 1}
+    assert phrases == {"check this out right now": 1}
 
 
 def test_future_archive_dates_are_preserved():
